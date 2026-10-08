@@ -13,13 +13,15 @@ import { api, getActiveUserId, getActiveUserName, setActiveUser } from './servic
 
 export function App() {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
-  const [assessmentConfig, setAssessmentConfig] = useState<{ is_diagnostic?: boolean }>({});
+  const [assessmentConfig, setAssessmentConfig] = useState<{ is_diagnostic?: boolean; course_id?: string }>({});
   
   // Student identification state
   const [currentUser, setCurrentUser] = useState<{ id: string; name: string } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showCreateCourse, setShowCreateCourse] = useState(false);
   const [checkingUser, setCheckingUser] = useState(true);
+  const [courseRefreshKey, setCourseRefreshKey] = useState(0);
+  const [lastCreatedCourseId, setLastCreatedCourseId] = useState<string | undefined>(undefined);
 
   // Check if student profile exists on startup
   useEffect(() => {
@@ -69,8 +71,13 @@ export function App() {
   };
 
   const handleCourseCreated = (course: any, meta?: { startDiagnostic?: boolean }) => {
+    setCourseRefreshKey(prev => prev + 1);
+    if (course?.id) {
+      setLastCreatedCourseId(course.id);
+    }
+    setShowCreateCourse(false);
     if (meta?.startDiagnostic) {
-      setAssessmentConfig({ is_diagnostic: true });
+      setAssessmentConfig({ is_diagnostic: true, course_id: course?.id });
       setCurrentTab('assessments');
     } else {
       setCurrentTab('courses');
@@ -78,7 +85,7 @@ export function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-200">
       <Navbar 
         currentTab={currentTab} 
         onTabChange={(tab) => handleNavigate(tab)} 
@@ -86,7 +93,7 @@ export function App() {
         isColdStart={false}
       />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+      <main className="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 lg:px-8 pt-6 pb-12">
         {currentTab === 'dashboard' && (
           <Dashboard 
             onNavigate={handleNavigate} 
@@ -97,7 +104,11 @@ export function App() {
         {currentTab === 'assessments' && <Assessments initialDiagnostic={assessmentConfig.is_diagnostic} />}
         {currentTab === 'explorer' && <KnowledgeExplorer />}
         {currentTab === 'courses' && (
-          <Courses onOpenAddCourse={() => setShowCreateCourse(true)} />
+          <Courses 
+            onOpenAddCourse={() => setShowCreateCourse(true)}
+            activeCourseId={lastCreatedCourseId}
+            refreshTrigger={courseRefreshKey}
+          />
         )}
         {currentTab === 'profile' && <LearnerProfile />}
         {currentTab === 'analytics' && <Analytics />}

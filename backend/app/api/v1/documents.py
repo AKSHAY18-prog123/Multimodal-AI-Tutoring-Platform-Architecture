@@ -221,3 +221,28 @@ async def list_course_documents(
         }
         for d in docs
     ])
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    session: AsyncSession = Depends(get_db_session)
+):
+    result = await session.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise EntityNotFoundError("Document", document_id)
+
+    if doc.file_path and os.path.exists(doc.file_path):
+        try:
+            os.remove(doc.file_path)
+        except Exception:
+            pass
+
+    await session.delete(doc)
+    await session.commit()
+
+    return format_success_response({
+        "deleted": True,
+        "document_id": document_id,
+        "message": f"Document '{doc.filename}' was successfully deleted."
+    })

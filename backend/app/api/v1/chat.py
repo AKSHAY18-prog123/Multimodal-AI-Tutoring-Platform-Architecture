@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from backend.app.database.session import get_db_session
 from backend.app.database.models.chat import ChatSession, ChatMessage
 from backend.app.database.models.course import Course
+from backend.app.database.models.user import User
 from backend.app.memory.short_term_memory import short_term_memory
 from backend.app.memory.long_term_memory import long_term_memory
 from backend.app.memory.episodic_memory import episodic_memory_manager
@@ -25,9 +26,11 @@ class CreateSessionRequest(BaseModel):
 class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     pinned: Optional[bool] = None
+    course_id: Optional[str] = None
 
 class SendMessageRequest(BaseModel):
     user_id: Optional[str] = None
+    course_id: Optional[str] = None
     message: str
     allow_outside_knowledge: bool = False
 
@@ -36,9 +39,15 @@ async def create_chat_session(
     payload: CreateSessionRequest,
     session: AsyncSession = Depends(get_db_session)
 ):
+    target_user_id = payload.user_id
+    if not target_user_id:
+        u_res = await session.execute(select(User).limit(1))
+        u_obj = u_res.scalar_one_or_none()
+        target_user_id = u_obj.id if u_obj else None
+
     chat = ChatSession(
-        user_id=payload.user_id or "anonymous-student",
-        course_id=payload.course_id,
+        user_id=target_user_id,
+        course_id=payload.course_id if payload.course_id != 'all' else None,
         title=payload.title or "New Conversation",
         topic=payload.topic,
         pinned=False
@@ -139,6 +148,8 @@ async def update_chat_session(
         chat.title = payload.title
     if payload.pinned is not None:
         chat.pinned = payload.pinned
+    if payload.course_id is not None:
+        chat.course_id = payload.course_id if payload.course_id != 'all' else None
     chat.updated_at = datetime.now(timezone.utc)
 
     await session.commit()
@@ -172,6 +183,13 @@ async def send_chat_message(
 
     user_query = payload.message.strip()
 
+    # Update course_id if explicitly passed in message
+    if payload.course_id is not None:
+        new_cid = payload.course_id if payload.course_id != 'all' else None
+        chat.course_id = new_cid
+
+    target_course_id = chat.course_id
+
     # Auto-generate title from first message if title is default
     if chat.title == "New Conversation" and len(user_query) > 0:
         clean_title = user_query[:32] + ("..." if len(user_query) > 32 else "")
@@ -202,8 +220,8 @@ async def send_chat_message(
 
     # Fetch Course Subject if available
     course_subject = ""
-    if chat.course_id:
-        c_res = await session.execute(select(Course).where(Course.id == chat.course_id))
+    if target_course_id:
+        c_res = await session.execute(select(Course).where(Course.id == target_course_id))
         c_obj = c_res.scalar_one_or_none()
         if c_obj:
             course_subject = c_obj.subject or c_obj.title
@@ -211,7 +229,7 @@ async def send_chat_message(
     # 5. Execute Grounded Generation
     gen_result = await grounded_generator.answer_question(
         query=user_query,
-        course_id=chat.course_id,
+        course_id=target_course_id,
         course_subject=course_subject,
         student_profile=learner_ctx.get("behavior"),
         episodic_memories=episodes,

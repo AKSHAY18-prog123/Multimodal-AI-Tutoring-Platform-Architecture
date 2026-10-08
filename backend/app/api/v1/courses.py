@@ -1,3 +1,4 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -6,6 +7,7 @@ from typing import Optional, List, Dict, Any
 
 from backend.app.database.session import get_db_session
 from backend.app.database.models.course import Course
+from backend.app.database.models.document import Document
 from backend.app.database.models.knowledge import Topic, Concept, ConceptRelationship
 from backend.app.knowledge_base.prerequisite_graph import prerequisite_engine
 from backend.app.core.exceptions import format_success_response, EntityNotFoundError
@@ -179,3 +181,32 @@ async def get_knowledge_graph(course_id: str, session: AsyncSession = Depends(ge
     graph_viz = prerequisite_engine.export_graph_visualization()
 
     return format_success_response(graph_viz)
+
+@router.delete("/{course_id}")
+async def delete_course(
+    course_id: str,
+    session: AsyncSession = Depends(get_db_session)
+):
+    result = await session.execute(select(Course).where(Course.id == course_id))
+    course = result.scalar_one_or_none()
+    if not course:
+        raise EntityNotFoundError("Course", course_id)
+
+    # Delete associated files on disk
+    doc_res = await session.execute(select(Document).where(Document.course_id == course_id))
+    docs = doc_res.scalars().all()
+    for doc in docs:
+        if doc.file_path and os.path.exists(doc.file_path):
+            try:
+                os.remove(doc.file_path)
+            except Exception:
+                pass
+
+    await session.delete(course)
+    await session.commit()
+
+    return format_success_response({
+        "deleted": True,
+        "course_id": course_id,
+        "message": f"Course '{course.title}' and all associated materials were successfully deleted."
+    })

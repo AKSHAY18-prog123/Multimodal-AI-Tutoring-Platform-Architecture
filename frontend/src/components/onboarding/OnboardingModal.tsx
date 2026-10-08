@@ -36,8 +36,8 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete }) 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-md p-4 animate-fade-in">
-      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden transform transition-all">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 animate-fade-in">
+      <div className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden transform transition-all">
         {/* Header Banner */}
         <div className="bg-gradient-to-tr from-brand-700 via-brand-600 to-sky-600 px-8 pt-8 pb-6 text-white text-center">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-white/10 backdrop-blur-md border border-white/20 flex items-center justify-center mb-4 shadow-inner">
@@ -52,19 +52,19 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete }) 
         {/* Form Body */}
         <div className="p-8 space-y-6">
           <div className="text-center space-y-1">
-            <h3 className="text-base font-semibold text-slate-900">Let's set up your profile</h3>
-            <p className="text-xs text-slate-500">
+            <h3 className="text-base font-semibold text-slate-900 dark:text-white">Let's set up your profile</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               We'll tailor the explanations, knowledge tracking, and pace specifically to you.
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
                 What should we call you? *
               </label>
               <div className="relative">
-                <User className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400" />
+                <User className="w-4 h-4 absolute left-3.5 top-3.5 text-slate-400 dark:text-slate-500" />
                 <input
                   type="text"
                   required
@@ -72,26 +72,26 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete }) 
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Your name"
-                  className="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 text-slate-900 font-medium placeholder-slate-400"
+                  className="w-full pl-10 pr-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 text-slate-900 dark:text-white font-medium placeholder-slate-400 dark:placeholder-slate-500"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                Email Address <span className="text-slate-400 font-normal">(Optional)</span>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1.5">
+                Email Address <span className="text-slate-400 dark:text-slate-500 font-normal">(Optional)</span>
               </label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="alex.student@university.edu"
-                className="w-full px-4 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 text-slate-900 placeholder-slate-400"
+                className="w-full px-4 py-2.5 text-sm bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500"
               />
             </div>
 
             {error && (
-              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs">
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-xs">
                 {error}
               </div>
             )}
@@ -106,7 +106,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ onComplete }) 
             </button>
           </form>
 
-          <div className="flex items-center gap-2 justify-center text-[11px] text-slate-400">
+          <div className="flex items-center gap-2 justify-center text-[11px] text-slate-400 dark:text-slate-500">
             <Sparkles className="w-3.5 h-3.5 text-brand-500" />
             <span>Zero fake data • Starts in clean baseline state</span>
           </div>

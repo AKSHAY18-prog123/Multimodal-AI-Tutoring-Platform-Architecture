@@ -13,6 +13,18 @@ export function getActiveUserName(): string {
   return localStorage.getItem("student_name") || "Student";
 }
 
+export function getActiveCourseId(): string {
+  return localStorage.getItem("selected_course_id") || "";
+}
+
+export function setActiveCourseId(courseId: string): void {
+  if (courseId) {
+    localStorage.setItem("selected_course_id", courseId);
+  } else {
+    localStorage.removeItem("selected_course_id");
+  }
+}
+
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const url = `${API_BASE}${endpoint}`;
   const headers = {
@@ -55,10 +67,12 @@ export const api = {
     const payload = { ...data, user_id: data.user_id || getActiveUserId() };
     return request<any>("/courses", { method: "POST", body: JSON.stringify(payload) });
   },
+  deleteCourse: (courseId: string) => request<any>(`/courses/${courseId}`, { method: "DELETE" }),
   getKnowledgeGraph: (courseId: string) => request<any>(`/courses/${courseId}/knowledge-graph`),
 
   // Documents
   listCourseDocuments: (courseId: string) => request<any[]>(`/documents/course/${courseId}`),
+  deleteDocument: (documentId: string) => request<any>(`/documents/${documentId}`, { method: "DELETE" }),
   getDocumentStatus: (docId: string) => request<any>(`/documents/${docId}/status`),
   uploadDocument: async (courseId: string, file: File, sourceCategory = "course_source") => {
     const formData = new FormData();
@@ -105,11 +119,11 @@ export const api = {
     const payload = { ...data, user_id: data.user_id || getActiveUserId() };
     return request<any>("/chat/sessions", { method: "POST", body: JSON.stringify(payload) });
   },
-  updateChatSession: (chatId: string, data: { title?: string; pinned?: boolean }) =>
+  updateChatSession: (chatId: string, data: { title?: string; pinned?: boolean; course_id?: string | null }) =>
     request<any>(`/chat/sessions/${chatId}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteChatSession: (chatId: string) =>
     request<any>(`/chat/sessions/${chatId}`, { method: "DELETE" }),
-  sendMessage: (chatId: string, data: { message: string; allow_outside_knowledge?: boolean; user_id?: string }) => {
+  sendMessage: (chatId: string, data: { message: string; allow_outside_knowledge?: boolean; user_id?: string; course_id?: string }) => {
     const payload = { ...data, user_id: data.user_id || getActiveUserId() };
     return request<any>(`/chat/sessions/${chatId}/messages`, { method: "POST", body: JSON.stringify(payload) });
   },

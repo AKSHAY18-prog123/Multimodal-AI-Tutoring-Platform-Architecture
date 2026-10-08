@@ -120,4 +120,24 @@ class VectorStoreManager:
 
         return hits
 
+    def delete_by_document_id(self, document_id: str) -> int:
+        """Deletes all chunks associated with a specific document from ChromaDB."""
+        try:
+            self.collection.delete(where={"document_id": document_id})
+            logger.info(f"Deleted vector chunks for document_id={document_id}")
+            return 1
+        except Exception as e:
+            logger.error(f"Failed to delete chunks for document_id={document_id}: {e}")
+            return 0
+
+    def delete_by_course_id(self, course_id: str) -> int:
+        """Deletes all chunks associated with a specific course from ChromaDB."""
+        try:
+            self.collection.delete(where={"course_id": course_id})
+            logger.info(f"Deleted vector chunks for course_id={course_id}")
+            return 1
+        except Exception as e:
+            logger.error(f"Failed to delete chunks for course_id={course_id}: {e}")
+            return 0
+
 vector_store = VectorStoreManager()
