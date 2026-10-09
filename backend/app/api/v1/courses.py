@@ -202,6 +202,13 @@ async def delete_course(
             except Exception:
                 pass
 
+    # Delete all course vectors from ChromaDB
+    try:
+        from backend.app.knowledge_base.vector_store import vector_store
+        vector_store.delete_by_course_id(course_id)
+    except Exception as e:
+        logger.error(f"Failed to delete ChromaDB vectors for course {course_id}: {e}")
+
     await session.delete(course)
     await session.commit()
 

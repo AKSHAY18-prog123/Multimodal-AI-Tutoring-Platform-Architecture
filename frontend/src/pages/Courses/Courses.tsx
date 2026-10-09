@@ -18,7 +18,9 @@ import {
   Zap,
   Check,
   FileUp,
-  Activity
+  Activity,
+  Play,
+  Link as LinkIcon
 } from 'lucide-react';
 import { api, getActiveCourseId, setActiveCourseId } from '../../services/api';
 import { DocumentItem, Course } from '../../types';
@@ -40,6 +42,12 @@ export const Courses: React.FC<CoursesProps> = ({ onOpenAddCourse, activeCourseI
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState<string[]>([]);
   const [trashingCourse, setTrashingCourse] = useState(false);
+
+  // YouTube Ingestion State
+  const [ingestMode, setIngestMode] = useState<'files' | 'youtube'>('files');
+  const [youtubeUrl, setYoutubeUrl] = useState('');
+  const [youtubeTitle, setYoutubeTitle] = useState('');
+  const [youtubeSubmitting, setYoutubeSubmitting] = useState(false);
 
   useEffect(() => {
     loadCourses(activeCourseId);
@@ -174,8 +182,44 @@ export const Courses: React.FC<CoursesProps> = ({ onOpenAddCourse, activeCourseI
     }
   }
 
+  async function handleYouTubeSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!youtubeUrl.trim() || !selectedCourseId) return;
+
+    setYoutubeSubmitting(true);
+    setUploading(true);
+    setUploadProgress(20);
+    setUploadStatus("Fetching YouTube transcript & segmenting timestamps...");
+    setUploadingFiles([youtubeTitle.trim() || "YouTube Lecture Video"]);
+
+    try {
+      const res = await api.ingestYouTubeVideo({
+        course_id: selectedCourseId,
+        url: youtubeUrl.trim(),
+        title: youtubeTitle.trim() || undefined,
+        source_category: sourceCategory
+      });
+      if (res.job_id) {
+        setActiveJobId(res.job_id);
+      }
+      setUploadProgress(50);
+      setUploadStatus("indexing");
+      setYoutubeUrl('');
+      setYoutubeTitle('');
+      await loadDocuments(selectedCourseId);
+    } catch (err: any) {
+      alert(`YouTube ingestion failed: ${err.message}`);
+      setUploading(false);
+      setUploadProgress(null);
+      setUploadingFiles([]);
+    } finally {
+      setYoutubeSubmitting(false);
+    }
+  }
+
   const getDocIcon = (type: string) => {
     switch (type.toLowerCase()) {
+      case 'youtube': return <Play className="w-5 h-5 text-red-600 fill-red-600/20" />;
       case 'pdf': return <FileText className="w-5 h-5 text-red-500" />;
       case 'pptx': case 'ppt': return <Presentation className="w-5 h-5 text-orange-500" />;
       case 'video': case 'mp4': return <Video className="w-5 h-5 text-sky-500" />;
@@ -300,7 +344,97 @@ export const Courses: React.FC<CoursesProps> = ({ onOpenAddCourse, activeCourseI
             </div>
           </div>
 
-          {/* Dropzone & Dynamic Ingestion Container */}
+          {/* Material Format Toggle: Files vs YouTube */}
+          <div className="space-y-2">
+            <label className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+              Material Format
+            </label>
+            <div className="grid grid-cols-2 gap-2 text-xs font-semibold p-1 rounded-xl bg-slate-100 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIngestMode('files')}
+                className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  ingestMode === 'files'
+                    ? 'bg-white dark:bg-slate-800 text-sky-600 dark:text-sky-400 shadow-xs font-bold border border-slate-200/80 dark:border-slate-700'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <FileUp className="w-3.5 h-3.5" />
+                <span>Upload Files</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIngestMode('youtube')}
+                className={`py-2 px-3 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  ingestMode === 'youtube'
+                    ? 'bg-white dark:bg-slate-800 text-red-600 dark:text-red-400 shadow-xs font-bold border border-slate-200/80 dark:border-slate-700'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Play className="w-3.5 h-3.5 fill-red-500/20 text-red-500" />
+                <span>YouTube Link</span>
+              </button>
+            </div>
+          </div>
+
+          {/* YouTube Video URL Form */}
+          {ingestMode === 'youtube' && !uploading && (
+            <form onSubmit={handleYouTubeSubmit} className="space-y-4 p-5 rounded-2xl border border-red-200 dark:border-red-950/80 bg-red-50/40 dark:bg-red-950/20">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <Play className="w-3.5 h-3.5 text-red-600 fill-red-600" />
+                  YouTube Video Link
+                </label>
+                <input
+                  type="url"
+                  required
+                  value={youtubeUrl}
+                  onChange={(e) => setYoutubeUrl(e.target.value)}
+                  placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+                  disabled={uploading}
+                  className="w-full px-3.5 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                  Lecture Title / Topic (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={youtubeTitle}
+                  onChange={(e) => setYoutubeTitle(e.target.value)}
+                  placeholder="e.g. Deep Learning Lecture 1: Backpropagation"
+                  disabled={uploading}
+                  className="w-full px-3.5 py-2 text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-500"
+                />
+              </div>
+
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 space-y-1 bg-white/70 dark:bg-slate-900/70 p-3 rounded-xl border border-slate-200/80 dark:border-slate-800">
+                <div className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-red-500" />
+                  What happens when you add a link:
+                </div>
+                <ul className="list-disc pl-4 space-y-0.5 text-[10.5px]">
+                  <li>Fetches the entire spoken lecture transcript automatically.</li>
+                  <li>Partitions speech into ~2-minute topic intervals (e.g. <code>00:00 - 02:35</code>).</li>
+                  <li>Indexes timestamps so the AI can provide exact clickable video jump links.</li>
+                </ul>
+              </div>
+
+              <button
+                type="submit"
+                disabled={uploading || !youtubeUrl.trim() || !selectedCourseId}
+                className="w-full py-2.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>{youtubeSubmitting ? 'Processing YouTube Video...' : 'Ingest & Index YouTube Video'}</span>
+              </button>
+            </form>
+          )}
+
+          {/* Dropzone & Dynamic Ingestion Container (Files Mode or Processing Mode) */}
+          {(ingestMode === 'files' || uploading) && (
           <div className={`relative overflow-hidden rounded-2xl border-2 transition-all duration-300 ${
             uploading
               ? 'border-sky-500/60 bg-gradient-to-b from-sky-950/30 via-slate-900/60 to-slate-950/80 shadow-lg shadow-sky-500/10 p-6'
@@ -443,6 +577,7 @@ export const Courses: React.FC<CoursesProps> = ({ onOpenAddCourse, activeCourseI
               </div>
             )}
           </div>
+          )}
         </div>
 
         {/* Right Column: Ingested Document Inventory */}
@@ -473,11 +608,18 @@ export const Courses: React.FC<CoursesProps> = ({ onOpenAddCourse, activeCourseI
                       {getDocIcon(doc.file_type)}
                     </div>
                     <div>
-                      <h4 className="text-sm font-bold text-slate-900 dark:text-white">{doc.filename}</h4>
+                      <h4 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        <span>{doc.filename}</span>
+                        {doc.file_type === 'youtube' && (
+                          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800">
+                            YouTube Video
+                          </span>
+                        )}
+                      </h4>
                       <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500 mt-0.5">
                         <span className="uppercase font-semibold">{doc.file_type}</span>
                         <span>•</span>
-                        <span>{(doc.file_size_bytes / 1024).toFixed(1)} KB</span>
+                        <span>{doc.file_type === 'youtube' ? 'Online Lecture' : `${(doc.file_size_bytes / 1024).toFixed(1)} KB`}</span>
                         <span>•</span>
                         <span className="capitalize">{doc.source_category.replace('_', ' ')}</span>
                       </div>

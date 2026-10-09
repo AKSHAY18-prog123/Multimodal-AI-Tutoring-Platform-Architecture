@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Any
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 
 from backend.app.database.session import AsyncSessionLocal
 from backend.app.database.models.document import Document, DocumentPage, Slide, Video, VideoSegment, VisualElement
@@ -36,6 +36,15 @@ async def process_document_background(document_id: str):
         filename = doc.filename
 
         try:
+            # Clean up any existing children and vector chunks if reprocessing
+            await session.execute(delete(KnowledgeChunk).where(KnowledgeChunk.document_id == document_id))
+            await session.execute(delete(DocumentPage).where(DocumentPage.document_id == document_id))
+            await session.execute(delete(Slide).where(Slide.document_id == document_id))
+            await session.execute(delete(Video).where(Video.document_id == document_id))
+            await session.execute(delete(VisualElement).where(VisualElement.document_id == document_id))
+            vector_store.delete_by_document_id(document_id)
+            await session.commit()
+
             # Stage 1: Extracting (20%)
             doc.status = "extracting"
             doc.processing_progress = 20
@@ -86,15 +95,18 @@ async def process_document_background(document_id: str):
                         )
                         session.add(v_elem)
 
-                        # Create searchable chunk for the visual element
-                        v_chunk = chunker.chunk_visual_element(
-                            visual_info=vision_result,
-                            document_id=doc.id,
-                            source_file=filename,
-                            course_id=course_id,
-                            page_number=p["page_number"]
-                        )
-                        raw_chunks.append(v_chunk)
+                        # Create searchable chunk for the visual element ONLY if verified by real multimodal vision model
+                        if not vision_result.get("is_mock", True):
+                            v_chunk = chunker.chunk_visual_element(
+                                visual_info=vision_result,
+                                document_id=doc.id,
+                                source_file=filename,
+                                course_id=course_id,
+                                page_number=p["page_number"]
+                            )
+                            raw_chunks.append(v_chunk)
+                        else:
+                            logger.info(f"[Worker] Skipping vector chunking for unverified/mock image on page {p['page_number']}.")
 
                 # Stage 3: Chunking (65%)
                 doc.status = "chunking"
@@ -125,6 +137,50 @@ async def process_document_background(document_id: str):
                 await session.commit()
                 slide_chunks = chunker.chunk_ppt_slides(slides, doc.id, filename, course_id)
                 raw_chunks.extend(slide_chunks)
+
+            elif doc_type == "youtube":
+                meta = video_ingestor.fetch_youtube_metadata(doc_file_path)
+                if meta and meta.get("title"):
+                    if doc.filename in ["YouTube Video", "Video", "Python (Video)", ""] or "http" in doc.filename:
+                        doc.filename = meta["title"]
+                if meta:
+                    doc.metadata_json = {
+                        **(doc.metadata_json or {}),
+                        "title": meta.get("title"),
+                        "thumbnail": meta.get("thumbnail"),
+                        "channel": meta.get("channel"),
+                        "duration": meta.get("duration"),
+                        "duration_formatted": meta.get("duration_formatted")
+                    }
+
+                segments = video_ingestor.ingest_youtube_transcript(doc_file_path)
+                vid = Video(
+                    document_id=doc.id,
+                    duration_seconds=meta.get("duration") or (segments[-1]["timestamp_end"] if segments else 0.0),
+                    resolution="1080p"
+                )
+                session.add(vid)
+                await session.flush()
+
+                for seg in segments:
+                    db_seg = VideoSegment(
+                        video_id=vid.id,
+                        timestamp_start=seg["timestamp_start"],
+                        timestamp_end=seg["timestamp_end"],
+                        timestamp_start_formatted=seg["timestamp_start_formatted"],
+                        timestamp_end_formatted=seg["timestamp_end_formatted"],
+                        transcript_text=seg["transcript"],
+                        key_concepts=seg.get("key_concepts", [])
+                    )
+                    session.add(db_seg)
+                    extracted_text_corpus.append(seg["transcript"])
+                await session.flush()
+
+                doc.status = "chunking"
+                doc.processing_progress = 65
+                await session.commit()
+                v_chunks = chunker.chunk_video_segments(segments, doc.id, doc.filename, course_id)
+                raw_chunks.extend(v_chunks)
 
             elif doc_type in ["video", "mp4", "webm", "audio", "mp3"]:
                 segments = video_ingestor.extract_video_segments(doc_file_path, document_id)

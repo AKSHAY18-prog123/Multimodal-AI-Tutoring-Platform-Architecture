@@ -222,6 +222,51 @@ class ChunkingService:
                     "chunk_type": "video_transcript"
                 }
             })
+
+        # Add high-level hierarchical curriculum roadmap chunk for ANY video length
+        if len(segments) >= 3:
+            total_duration_fmt = segments[-1].get("timestamp_end_formatted", "00:00")
+            step = max(1, len(segments) // 7)
+            milestones = []
+            for i in range(0, len(segments), step):
+                s = segments[i]
+                start_f = s.get("timestamp_start_formatted", "00:00")
+                end_f = s.get("timestamp_end_formatted", "00:00")
+                preview = s.get("transcript", "").strip()[:80]
+                milestones.append(f"- {start_f} - {end_f}: {preview}...")
+
+            curriculum_summary = (
+                f"[Video Curriculum & Topic Roadmap: {source_file}]\n"
+                f"Total Video Duration: {total_duration_fmt} ({len(segments)} timestamped lecture segments)\n\n"
+                f"Chronological Lecture Progression:\n" + "\n".join(milestones)
+            )
+            chunks.append({
+                "id": str(uuid.uuid4()),
+                "document_id": document_id,
+                "content": curriculum_summary,
+                "chunk_type": "video_curriculum_map",
+                "source_type": "video",
+                "source_file": source_file,
+                "page_number": None,
+                "slide_number": None,
+                "timestamp_start": 0.0,
+                "timestamp_end": segments[-1].get("timestamp_end", 0.0),
+                "timestamp_start_formatted": "00:00",
+                "timestamp_end_formatted": total_duration_fmt,
+                "topic_name": "Course Overview & Lecture Roadmap",
+                "concept_name": "Curriculum Syllabus",
+                "metadata": {
+                    "course_id": course_id,
+                    "document_id": document_id,
+                    "source_type": "video",
+                    "source_file": source_file,
+                    "timestamp_start": 0.0,
+                    "timestamp_end": segments[-1].get("timestamp_end", 0.0),
+                    "timestamp_start_formatted": "00:00",
+                    "timestamp_end_formatted": total_duration_fmt,
+                    "chunk_type": "video_curriculum_map"
+                }
+            })
         return chunks
 
     def chunk_visual_element(

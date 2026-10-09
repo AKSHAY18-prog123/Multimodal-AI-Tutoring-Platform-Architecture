@@ -2,7 +2,8 @@ import os
 import shutil
 import asyncio
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -16,6 +17,58 @@ from backend.app.core.exceptions import format_success_response, EntityNotFoundE
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
 ALLOWED_EXTENSIONS = {".pdf", ".pptx", ".ppt", ".mp4", ".webm", ".png", ".jpg", ".jpeg", ".mp3", ".wav"}
+
+class YouTubeIngestRequest(BaseModel):
+    course_id: str
+    url: str
+    title: Optional[str] = None
+    source_category: str = "course_source"
+
+@router.post("/youtube")
+async def ingest_youtube_video(
+    payload: YouTubeIngestRequest,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """
+    Ingest a YouTube video lecture directly via URL.
+    Extracts speech transcript, groups into logical 2-3 min topic chunks with exact timestamps,
+    and indexes into vector and relational knowledge base.
+    """
+    from backend.app.ingestion.video_ingestion import extract_youtube_video_id
+    video_id = extract_youtube_video_id(payload.url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="Invalid YouTube URL. Please provide a valid YouTube video link.")
+
+    clean_title = (payload.title or f"YouTube Lecture ({video_id})").strip()
+    display_name = f"{clean_title} (Video)" if not clean_title.endswith("(Video)") else clean_title
+
+    doc = Document(
+        course_id=payload.course_id,
+        filename=display_name,
+        file_path=payload.url,
+        file_type="youtube",
+        source_category=payload.source_category,
+        file_size_bytes=0,
+        status="uploaded",
+        processing_progress=5
+    )
+    session.add(doc)
+    await session.commit()
+    await session.refresh(doc)
+
+    background_tasks.add_task(process_document_background, doc.id)
+
+    return format_success_response({
+        "job_id": doc.id,
+        "document_id": doc.id,
+        "filename": doc.filename,
+        "file_type": doc.file_type,
+        "source_category": doc.source_category,
+        "status": doc.status,
+        "progress": doc.processing_progress,
+        "message": "YouTube lecture queued for transcript and timestamp indexing."
+    })
 
 @router.post("/upload")
 async def upload_document(
@@ -231,6 +284,13 @@ async def delete_document(
     doc = result.scalar_one_or_none()
     if not doc:
         raise EntityNotFoundError("Document", document_id)
+
+    # Delete associated vector chunks from ChromaDB
+    try:
+        from backend.app.knowledge_base.vector_store import vector_store
+        vector_store.delete_by_document_id(document_id)
+    except Exception as e:
+        logger.error(f"Failed to delete ChromaDB vectors for doc {document_id}: {e}")
 
     if doc.file_path and os.path.exists(doc.file_path):
         try:

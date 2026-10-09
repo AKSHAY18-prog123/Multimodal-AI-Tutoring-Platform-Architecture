@@ -8,6 +8,7 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
+    connect_args={"timeout": 60.0}
 )
 
 # Enable SQLite foreign keys & WAL mode for high performance concurrency
@@ -16,6 +17,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=60000")
     cursor.close()
 
 AsyncSessionLocal = async_sessionmaker(

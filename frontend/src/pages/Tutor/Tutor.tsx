@@ -17,6 +17,7 @@ import {
 import { api, getActiveCourseId, setActiveCourseId } from '../../services/api';
 import { ChatSession, ChatMessage, Citation, Course } from '../../types';
 import { SourceViewerDrawer } from '../../components/sources/SourceViewerDrawer';
+import { FormattedMessage } from '../../components/chat/FormattedMessage';
 
 export const Tutor: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
@@ -33,7 +34,9 @@ export const Tutor: React.FC = () => {
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isSwitchingSessionRef = useRef<boolean>(false);
 
   // Load chat sessions & courses on mount
   useEffect(() => {
@@ -60,6 +63,7 @@ export const Tutor: React.FC = () => {
   // When active session changes, load its message history
   useEffect(() => {
     if (activeSessionId) {
+      isSwitchingSessionRef.current = true;
       loadMessages(activeSessionId);
       const activeObj = sessions.find(s => s.id === activeSessionId);
       if (activeObj?.course_id) {
@@ -70,9 +74,22 @@ export const Tutor: React.FC = () => {
     }
   }, [activeSessionId]);
 
-  // Auto-scroll to bottom of conversation
+  // Position directly at the last conversation without animated top-to-bottom scrolling
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const scrollToBottomDirect = () => {
+      if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      } else if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({ behavior: 'auto' });
+      }
+    };
+
+    // Instant jump - no animated scrolling
+    scrollToBottomDirect();
+
+    // Use requestAnimationFrame to ensure newly rendered messages settle directly at the last message
+    const rafId = requestAnimationFrame(scrollToBottomDirect);
+    return () => cancelAnimationFrame(rafId);
   }, [messages, loading]);
 
   async function loadSessions() {
@@ -349,7 +366,7 @@ export const Tutor: React.FC = () => {
         </div>
 
         {/* Messages Stream */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div ref={messagesContainerRef} className="flex-1 overflow-y-auto p-6 space-y-6">
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center shadow-xs">
@@ -414,9 +431,12 @@ export const Tutor: React.FC = () => {
                   )}
 
                   {/* Message Body */}
-                  <div className="whitespace-pre-wrap leading-relaxed space-y-2 text-slate-800 dark:text-slate-100">
-                    {m.content}
-                  </div>
+                  <FormattedMessage
+                    content={m.content}
+                    citations={m.citations}
+                    onCitationClick={handleCitationClick}
+                    isUser={m.role === 'user'}
+                  />
 
                   {/* Outside Knowledge Offer Button */}
                   {m.outside_knowledge_offered && (

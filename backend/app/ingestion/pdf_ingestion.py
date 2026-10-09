@@ -79,6 +79,12 @@ class PDFIngestionService:
                 for img_idx, img_info in enumerate(image_list):
                     xref = img_info[0]
                     base_image = doc.extract_image(xref)
+                    w = base_image.get("width", 0)
+                    h = base_image.get("height", 0)
+                    # Filter out tiny icons, bullets, and decorative lines
+                    if w < 120 or h < 120 or (w * h < 15000):
+                        continue
+
                     image_bytes = base_image["image"]
                     image_ext = base_image["ext"]
 

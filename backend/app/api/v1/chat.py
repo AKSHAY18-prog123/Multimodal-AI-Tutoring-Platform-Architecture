@@ -14,6 +14,7 @@ from backend.app.memory.long_term_memory import long_term_memory
 from backend.app.memory.episodic_memory import episodic_memory_manager
 from backend.app.rag.grounded_generation import grounded_generator
 from backend.app.core.exceptions import format_success_response, EntityNotFoundError
+from backend.app.core.logging import logger
 
 router = APIRouter(prefix="/chat", tags=["Chat & Tutor"])
 
@@ -202,14 +203,83 @@ async def send_chat_message(
         content=user_query
     )
     session.add(user_msg)
-    await session.flush()
+    await session.commit()
 
     active_user_id = payload.user_id or chat.user_id or "anonymous-student"
 
     # 3. Add to Short-Term Memory
     short_term_memory.add_turn(chat_id, active_user_id, "user", user_query)
 
-    # 4. Fetch Long-Term Learner Profile & Episodic Memories
+    # Fetch recent chat history from SQLite for short-term memory context (excluding the just-added user_msg)
+    history_stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == chat_id, ChatMessage.id != user_msg.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(6)
+    )
+    history_res = await session.execute(history_stmt)
+    history_rows = history_res.scalars().all()
+    chat_history = [
+        {"role": m.role, "content": m.content}
+        for m in reversed(history_rows)
+    ]
+    if not chat_history:
+        chat_history = [turn for turn in short_term_memory.get_recent_history(chat_id) if turn.get("content") != user_query]
+
+    # 4. Detect Pedagogical Feedback Signals & Adapt Hidden Learner Memory
+    q_lower = user_query.lower()
+    confusion_signals = [
+        "don't understand", "dont understand", "confusing", "confused",
+        "simpler", "too complex", "too complicated", "hard to follow",
+        "not clear", "explain differently", "analogy", "simpler way", "didn't get", "didnt get"
+    ]
+    breakthrough_signals = [
+        "i understand now", "makes sense", "got it", "crystal clear",
+        "now i get it", "thank you that helps", "great explanation", "perfect thanks"
+    ]
+
+    current_concept = chat.topic or (chat_history[-1]["content"][:32] if chat_history else "General")
+
+    if any(sig in q_lower for sig in confusion_signals):
+        try:
+            await episodic_memory_manager.record_episode(
+                user_id=active_user_id,
+                topic=chat.topic or "General",
+                concept=current_concept,
+                event_type="confusion",
+                evidence=user_query,
+                result="Student requested intuitive real-world analogy and simpler breakdown",
+                session=session
+            )
+            await long_term_memory.update_behavior_preference(
+                user_id=active_user_id,
+                preference_key="prefers_examples_before_theory",
+                value=True,
+                session=session
+            )
+            await long_term_memory.update_behavior_preference(
+                user_id=active_user_id,
+                preference_key="explanation_preference",
+                value="intuitive_analogy_first",
+                session=session
+            )
+        except Exception as e:
+            logger.warning(f"Could not record confusion episodic memory: {e}")
+    elif any(sig in q_lower for sig in breakthrough_signals):
+        try:
+            await episodic_memory_manager.record_episode(
+                user_id=active_user_id,
+                topic=chat.topic or "General",
+                concept=current_concept,
+                event_type="mastery_breakthrough",
+                evidence=user_query,
+                result="Student successfully mastered concept via intuitive explanation",
+                session=session
+            )
+        except Exception as e:
+            logger.warning(f"Could not record breakthrough episodic memory: {e}")
+
+    # 5. Fetch Long-Term Learner Profile & Episodic Memories
     learner_ctx = await long_term_memory.get_learner_context(active_user_id, session)
     episodes = await episodic_memory_manager.get_episodes_for_topic(
         active_user_id,
@@ -233,7 +303,8 @@ async def send_chat_message(
         course_subject=course_subject,
         student_profile=learner_ctx.get("behavior"),
         episodic_memories=episodes,
-        allow_outside_knowledge=payload.allow_outside_knowledge
+        allow_outside_knowledge=payload.allow_outside_knowledge,
+        chat_history=chat_history
     )
 
     # 6. Save Assistant Message
@@ -247,7 +318,10 @@ async def send_chat_message(
         suggested_followups=gen_result["suggested_followups"]
     )
     session.add(assistant_msg)
-    chat.updated_at = datetime.now(timezone.utc)
+    c_stmt = await session.execute(select(ChatSession).where(ChatSession.id == chat_id))
+    cur_chat = c_stmt.scalar_one_or_none()
+    if cur_chat:
+        cur_chat.updated_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(assistant_msg)
 

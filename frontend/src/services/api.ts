@@ -108,6 +108,8 @@ export const api = {
     }
     return json.data;
   },
+  ingestYouTubeVideo: (data: { course_id: string; url: string; title?: string; source_category?: string }) =>
+    request<any>("/documents/youtube", { method: "POST", body: JSON.stringify(data) }),
 
   // Chat
   listChatSessions: (userId?: string) => {

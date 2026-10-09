@@ -67,7 +67,9 @@ class GeminiVisionProvider(BaseVisionProvider):
         )
         raw = clean_json_text(response.text or "{}")
         try:
-            return json.loads(raw)
+            res = json.loads(raw)
+            res["is_mock"] = False
+            return res
         except Exception as e:
             logger.error(f"Failed to parse Gemini Vision JSON: {e}")
             return {
@@ -75,7 +77,8 @@ class GeminiVisionProvider(BaseVisionProvider):
                 "description": response.text or "Visual element extracted",
                 "concept": "Extracted Figure",
                 "entities": [],
-                "relationships": []
+                "relationships": [],
+                "is_mock": False
             }
 
 class OllamaVisionProvider(BaseVisionProvider):
@@ -111,7 +114,9 @@ class OllamaVisionProvider(BaseVisionProvider):
             resp.raise_for_status()
             data = resp.json()
             raw = clean_json_text(data.get("response", "{}"))
-            return json.loads(raw)
+            res = json.loads(raw)
+            res["is_mock"] = False
+            return res
 
 class MockVisionProvider(BaseVisionProvider):
     """Mock vision provider for offline testing."""
@@ -123,18 +128,22 @@ class MockVisionProvider(BaseVisionProvider):
     ) -> Dict[str, Any]:
         filename = Path(image_path).stem
         clean_title = filename.replace("_", " ").replace("-", " ").title()
+        hint = ""
+        if context_prompt and "context:" in context_prompt.lower():
+            hint = context_prompt.split("context:")[-1].strip()
+
+        title = f"Figure: {hint}" if hint else f"Figure: {clean_title}"
+        desc = f"Visual element illustrating {hint}." if hint else "Diagram/figure embedded in course material."
 
         return {
-            "visual_type": "diagram" if any(w in filename.lower() for w in ["chart", "graph", "diagram", "figure", "map"]) else "figure",
-            "title": f"Educational Figure: {clean_title}",
-            "description": f"Visual conceptual diagram illustrating structural relationships, state transitions, and component behavior for {clean_title}.",
-            "concept": clean_title,
-            "entities": [f"{clean_title} Primary Component", f"{clean_title} Dependent Module"],
-            "relationships": [f"{clean_title} Primary Component feeds data and state to {clean_title} Dependent Module"],
-            "key_takeaways": [
-                f"Visual verification of boundary conditions for {clean_title}.",
-                "State integrity is maintained across all observed visual transitions."
-            ]
+            "visual_type": "figure",
+            "title": title,
+            "description": desc,
+            "concept": hint or clean_title,
+            "entities": [hint] if hint else [],
+            "relationships": [],
+            "key_takeaways": [],
+            "is_mock": True
         }
 
 def get_vision_provider() -> BaseVisionProvider:
