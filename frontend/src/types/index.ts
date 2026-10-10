@@ -1,10 +1,15 @@
 export interface Citation {
   chunk_id: string;
+  document_id?: string | null;
   source_type: 'pdf' | 'pptx' | 'video' | 'image' | 'document';
   source_file: string;
   page_number?: number | null;
   slide_number?: number | null;
   timestamp_formatted?: string | null;
+  timestamp_start?: number | null;
+  timestamp_end?: number | null;
+  video_url?: string | null;
+  snippet?: string | null;
   label: string;
   rerank_score?: number;
 }

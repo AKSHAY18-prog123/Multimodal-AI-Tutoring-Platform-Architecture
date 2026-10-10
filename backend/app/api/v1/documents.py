@@ -70,6 +70,8 @@ async def ingest_youtube_video(
         "message": "YouTube lecture queued for transcript and timestamp indexing."
     })
 
+import uuid
+
 @router.post("/upload")
 async def upload_document(
     course_id: str = Form(...),
@@ -101,6 +103,8 @@ async def upload_document(
     dest_dir = Path(settings.UPLOAD_DIR)
     dest_dir.mkdir(parents=True, exist_ok=True)
     saved_path = dest_dir / f"{course_id}_{file.filename}"
+    if saved_path.exists():
+        saved_path = dest_dir / f"{course_id}_{uuid.uuid4().hex[:8]}_{file.filename}"
 
     with open(saved_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -166,6 +170,8 @@ async def upload_documents_batch(
             file_type = "image"
             
         saved_path = dest_dir / f"{course_id}_{file.filename}"
+        if saved_path.exists():
+            saved_path = dest_dir / f"{course_id}_{uuid.uuid4().hex[:8]}_{file.filename}"
         with open(saved_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
@@ -249,6 +255,7 @@ async def get_document_details(
         "pages_count": len(pages_res.scalars().all()),
         "slides_count": len(slides_res.scalars().all()),
         "visual_elements_count": len(visuals_res.scalars().all()),
+        "metadata_json": doc.metadata_json or {},
         "created_at": doc.created_at.isoformat()
     })
 
@@ -270,6 +277,7 @@ async def list_course_documents(
             "file_size_bytes": d.file_size_bytes,
             "status": d.status,
             "progress": d.processing_progress,
+            "metadata_json": d.metadata_json or {},
             "created_at": d.created_at.isoformat()
         }
         for d in docs

@@ -2,8 +2,9 @@ import re
 from typing import List, Dict, Any
 from pathlib import Path
 
+
 class CitationValidator:
-    """Validates citations against retrieved chunks to prevent hallucinated citations."""
+    """Validates citations strictly against retrieved chunks to prevent hallucinated citations."""
 
     def format_citation_label(self, meta: Dict[str, Any]) -> str:
         sfile = meta.get("source_file", "Course Material")
@@ -12,12 +13,15 @@ class CitationValidator:
         page = meta.get("page_number")
         slide = meta.get("slide_number")
         t_start = meta.get("timestamp_start_formatted")
+        t_end = meta.get("timestamp_end_formatted")
 
         if page is not None:
             return f"[Source: {clean_name} • Page {page}]"
         elif slide is not None:
             return f"[Source: {clean_name} • Slide {slide}]"
-        elif t_start is not None:
+        elif t_start is not None and t_start != "N/A":
+            if t_end and t_end != t_start and t_end != "N/A":
+                return f"[Source: {clean_name} • {t_start}-{t_end}]"
             return f"[Source: {clean_name} • {t_start}]"
         return f"[Source: {clean_name}]"
 
@@ -28,72 +32,77 @@ class CitationValidator:
     ) -> List[Dict[str, Any]]:
         """
         Cross-checks citations mentioned in response against actual retrieved chunks.
-        Guarantees that every citation emitted is backed by an actual chunk.
+        Guarantees that EVERY citation emitted is backed by an actual retrieved chunk
+        and includes the grounded text snippet and video timestamp URL when available.
         """
-        valid_citations = []
+        if not retrieved_chunks or not response_text:
+            return []
+
+        resp_lower = response_text.lower()
+        if "this topic is not covered in the uploaded course material" in resp_lower:
+            return []
+
+        valid_citations: List[Dict[str, Any]] = []
         seen_keys = set()
 
-        for chunk in retrieved_chunks:
+        for idx, chunk in enumerate(retrieved_chunks):
             meta = chunk.get("metadata", {})
+            if meta.get("is_fallback"):
+                continue
+
             stype = meta.get("source_type", "document")
             sfile = meta.get("source_file", "")
             page = meta.get("page_number")
             slide = meta.get("slide_number")
             t_start = meta.get("timestamp_start_formatted")
+            t_end = meta.get("timestamp_end_formatted")
+            video_url = meta.get("video_url")
 
-            # Check if this source was cited in text or is the primary grounding chunk
             key = f"{sfile}_{page}_{slide}_{t_start}"
             if key in seen_keys:
                 continue
 
             label = self.format_citation_label(meta)
-            rerank_score = chunk.get("rerank_score", 0.0)
-            in_text = (clean_stem := Path(sfile).stem.lower()) in response_text.lower() or label.lower() in response_text.lower()
+            short_label = f"[Source: {Path(sfile).stem.replace('_', ' ')} • {t_start}]" if t_start else label
+            rerank_score = float(chunk.get("rerank_score", 0.0))
+            clean_stem = Path(sfile).stem.lower().replace("_", " ")
 
-            if in_text or rerank_score >= 0.20:
+            in_text = (
+                (clean_stem and clean_stem in resp_lower)
+                or label.lower() in resp_lower
+                or short_label.lower() in resp_lower
+                or (t_start and str(t_start).lower() in resp_lower)
+                or (page is not None and f"page {page}" in resp_lower)
+                or (slide is not None and f"slide {slide}" in resp_lower)
+            )
+
+            # Emit citation if referenced in the answer or if it is a top-ranked supporting chunk
+            if in_text or (idx < 3 and rerank_score >= 0.30):
                 seen_keys.add(key)
+                raw_content = chunk.get("content", "").strip()
+                clean_snippet = re.sub(r"^\[(?:Video Segment|Table Summary|Visual Element)[^\]]*\]\s*", "", raw_content).strip()
+                if len(clean_snippet) > 420:
+                    clean_snippet = clean_snippet[:420].rsplit(" ", 1)[0] + "..."
+
+                ts_display = f"{t_start} - {t_end}" if (t_start and t_end and t_end != t_start) else t_start
+
                 valid_citations.append({
                     "chunk_id": chunk.get("id"),
+                    "document_id": meta.get("document_id"),
                     "source_type": stype,
                     "source_file": sfile,
                     "page_number": page,
                     "slide_number": slide,
-                    "timestamp_formatted": t_start,
+                    "timestamp_formatted": ts_display,
+                    "timestamp_start": meta.get("timestamp_start"),
+                    "timestamp_end": meta.get("timestamp_end"),
+                    "video_url": video_url,
+                    "snippet": clean_snippet,
                     "label": label,
                     "rerank_score": rerank_score
                 })
 
-        # Also extract any bracketed citations directly present in the response text
-        text_matches = re.findall(r"\[Source:\s*([^•\]]+?)(?:\s*•\s*([^\]]+))?\]", response_text)
-        for m_file, m_loc in text_matches:
-            clean_file = m_file.strip()
-            clean_loc = (m_loc or "").strip()
-            label = f"[Source: {clean_file} • {clean_loc}]" if clean_loc else f"[Source: {clean_file}]"
-            
-            # Check page/slide from location
-            p_num = None
-            s_num = None
-            if "page" in clean_loc.lower():
-                nums = re.findall(r"\d+", clean_loc)
-                p_num = int(nums[0]) if nums else None
-            elif "slide" in clean_loc.lower():
-                nums = re.findall(r"\d+", clean_loc)
-                s_num = int(nums[0]) if nums else None
-
-            key = f"{clean_file}_{p_num}_{s_num}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                valid_citations.append({
-                    "chunk_id": f"text-cite-{len(valid_citations)}",
-                    "source_type": "pdf" if p_num else ("pptx" if s_num else "document"),
-                    "source_file": clean_file,
-                    "page_number": p_num,
-                    "slide_number": s_num,
-                    "timestamp_formatted": clean_loc if ":" in clean_loc else None,
-                    "label": label,
-                    "rerank_score": 0.95
-                })
-
         return valid_citations
+
 
 citation_validator = CitationValidator()

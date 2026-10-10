@@ -3,10 +3,8 @@ import { Navbar } from './components/layout/Navbar';
 import { Dashboard } from './pages/Dashboard/Dashboard';
 import { Tutor } from './pages/Tutor/Tutor';
 import { Assessments } from './pages/Assessments/Assessments';
-import { KnowledgeExplorer } from './pages/KnowledgeExplorer/KnowledgeExplorer';
 import { Courses } from './pages/Courses/Courses';
 import { LearnerProfile } from './pages/LearnerProfile/LearnerProfile';
-import { Analytics } from './pages/Analytics/Analytics';
 import { OnboardingModal } from './components/onboarding/OnboardingModal';
 import { CreateCourseModal } from './components/courses/CreateCourseModal';
 import { api, getActiveUserId, getActiveUserName, setActiveUser } from './services/api';
@@ -102,7 +100,6 @@ export function App() {
         )}
         {currentTab === 'tutor' && <Tutor />}
         {currentTab === 'assessments' && <Assessments initialDiagnostic={assessmentConfig.is_diagnostic} />}
-        {currentTab === 'explorer' && <KnowledgeExplorer />}
         {currentTab === 'courses' && (
           <Courses 
             onOpenAddCourse={() => setShowCreateCourse(true)}
@@ -111,7 +108,6 @@ export function App() {
           />
         )}
         {currentTab === 'profile' && <LearnerProfile />}
-        {currentTab === 'analytics' && <Analytics />}
       </main>
 
       {/* First-Time User Onboarding Modal */}

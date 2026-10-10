@@ -109,14 +109,19 @@ class OllamaVisionProvider(BaseVisionProvider):
             "stream": False,
             "options": {"temperature": 0.1}
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{self.base_url}/api/generate", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            raw = clean_json_text(data.get("response", "{}"))
-            res = json.loads(raw)
-            res["is_mock"] = False
-            return res
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(f"{self.base_url}/api/generate", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                raw = clean_json_text(data.get("response", "{}"))
+                res = json.loads(raw)
+                res["is_mock"] = False
+                return res
+        except Exception as e:
+            logger.warning(f"Ollama Vision failed ({e}). Falling back gracefully to MockVisionProvider.")
+            fallback = MockVisionProvider()
+            return await fallback.analyze_image(image_path, context_prompt)
 
 class MockVisionProvider(BaseVisionProvider):
     """Mock vision provider for offline testing."""

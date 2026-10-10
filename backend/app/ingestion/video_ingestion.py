@@ -8,12 +8,156 @@ from backend.app.core.logging import logger
 
 def format_timestamp(seconds: float) -> str:
     """Format seconds into MM:SS or HH:MM:SS."""
+    seconds = max(0.0, float(seconds or 0.0))
     hrs = int(seconds // 3600)
     mins = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
     if hrs > 0:
         return f"{hrs:02d}:{mins:02d}:{secs:02d}"
     return f"{mins:02d}:{secs:02d}"
+
+
+def parse_timestamp_to_seconds(ts_str: str) -> float:
+    """Parse VTT/SRT or MM:SS / HH:MM:SS(.mmm) timestamp string into float seconds."""
+    if not ts_str:
+        return 0.0
+    clean = ts_str.strip().replace(",", ".")
+    clean = re.split(r"\s+", clean)[0]
+    parts = clean.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        elif len(parts) == 1:
+            return float(parts[0])
+    except (ValueError, TypeError):
+        pass
+    return 0.0
+
+
+_STOP_CONCEPT_WORDS = {
+    "welcome", "everyone", "today", "going", "about", "there", "their", "these",
+    "those", "which", "where", "while", "would", "could", "should", "because",
+    "through", "between", "after", "before", "under", "again", "further", "then",
+    "once", "here", "when", "what", "this", "that", "with", "from", "have", "will",
+    "your", "they", "them", "some", "into", "just", "like", "more", "very", "also",
+    "thing", "things", "really", "actually", "basically", "right", "okay", "well"
+}
+
+
+def _extract_segment_concepts(text: str, max_concepts: int = 4) -> List[str]:
+    """Extract meaningful concept keywords from a transcript segment."""
+    clean = re.sub(r"\[\d{2}:\d{2}(?::\d{2})?\]", "", text)
+    words = re.findall(r"\b[A-Za-z][A-Za-z0-9_-]{4,}\b", clean)
+    seen = set()
+    concepts = []
+    for w in words:
+        wl = w.lower()
+        if wl not in _STOP_CONCEPT_WORDS and wl not in seen:
+            seen.add(wl)
+            concepts.append(w.capitalize())
+            if len(concepts) >= max_concepts:
+                break
+    return concepts or ["Lecture Concept"]
+
+
+def _group_timed_utterances(
+    utterances: List[Dict[str, Any]],
+    video_id: Optional[str] = None,
+    window_seconds: float = 120.0,
+    max_words: int = 150
+) -> List[Dict[str, Any]]:
+    """
+    Groups fine-grained timed utterances into coherent lecture segments while:
+    1. Preserving the exact start timestamp of the first utterance in each group (no drift).
+    2. Embedding inline [MM:SS] markers inside the transcript so exact sub-segment topic
+       timestamps remain recoverable during retrieval and answer generation.
+    """
+    valid = []
+    for u in utterances:
+        text = str(u.get("text", "")).strip()
+        if not text:
+            continue
+        start = max(0.0, float(u.get("start", 0.0)))
+        if "end" in u and u["end"] is not None:
+            end = max(start, float(u["end"]))
+        else:
+            dur = max(0.0, float(u.get("duration", 0.0)))
+            end = start + (dur if dur > 0 else 3.0)
+        valid.append({"start": start, "end": end, "text": text})
+
+    if not valid:
+        return []
+
+    segments = []
+    cur_items: List[Dict[str, Any]] = []
+    cur_words = 0
+    cur_start: Optional[float] = None
+    cur_end: float = 0.0
+
+    def _flush_group(items: List[Dict[str, Any]], g_start: float, g_end: float) -> Dict[str, Any]:
+        # Build transcript with inline [MM:SS] markers at utterance intervals (~15s or first utterance)
+        marked_parts = []
+        plain_parts = []
+        sub_segments = []
+        last_marker_time = -999.0
+
+        for it in items:
+            it_start = it["start"]
+            it_end = it["end"]
+            it_text = it["text"]
+            it_fmt = format_timestamp(it_start)
+            plain_parts.append(it_text)
+            sub_segments.append({
+                "start": round(it_start, 2),
+                "end": round(it_end, 2),
+                "start_formatted": it_fmt,
+                "end_formatted": format_timestamp(it_end),
+                "text": it_text
+            })
+            if it_start - last_marker_time >= 15.0 or not marked_parts:
+                marked_parts.append(f"[{it_fmt}] {it_text}")
+                last_marker_time = it_start
+            else:
+                marked_parts.append(it_text)
+
+        full_text = " ".join(marked_parts)
+        plain_text = " ".join(plain_parts)
+        seg_dict: Dict[str, Any] = {
+            "timestamp_start": round(g_start, 2),
+            "timestamp_end": round(g_end, 2),
+            "timestamp_start_formatted": format_timestamp(g_start),
+            "timestamp_end_formatted": format_timestamp(g_end),
+            "transcript": full_text,
+            "plain_transcript": plain_text,
+            "sub_segments": sub_segments,
+            "key_concepts": _extract_segment_concepts(plain_text),
+            "is_fallback": False
+        }
+        if video_id:
+            seg_dict["video_id"] = video_id
+            seg_dict["video_url"] = f"https://www.youtube.com/watch?v={video_id}&t={int(g_start)}s"
+        return seg_dict
+
+    for item in valid:
+        if cur_start is None:
+            cur_start = item["start"]
+        cur_items.append(item)
+        cur_end = max(cur_end, item["end"])
+        cur_words += len(item["text"].split())
+
+        if (cur_end - cur_start) >= window_seconds or cur_words >= max_words:
+            segments.append(_flush_group(cur_items, cur_start, cur_end))
+            cur_items = []
+            cur_words = 0
+            cur_start = None
+
+    if cur_items and cur_start is not None:
+        segments.append(_flush_group(cur_items, cur_start, cur_end))
+
+    return segments
+
 
 class VideoIngestionService:
     """Extracts speech transcript, timestamps, and keyframe representations from video/audio lectures."""
@@ -45,12 +189,12 @@ class VideoIngestionService:
                 logger.info(f"Successfully transcribed {len(whisper_segments)} segments using local faster-whisper for {path.name}")
                 segments = whisper_segments
             else:
-                logger.info(f"Falling back to structured lecture segments for {path.name}")
+                logger.warning(f"No speech transcript extracted for {path.name}; marking fallback segments with is_fallback=True")
                 segments = self._generate_default_segments(path.name)
 
         return segments
 
-    def transcribe_with_whisper(self, media_path: str, model_size: str = "tiny") -> List[Dict[str, Any]]:
+    def transcribe_with_whisper(self, media_path: str, model_size: str = "tiny", video_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Transcribes local audio/video file using faster-whisper with zero mandatory API costs."""
         try:
             from faster_whisper import WhisperModel
@@ -70,40 +214,7 @@ class VideoIngestionService:
             if not raw_segments:
                 return []
 
-            # Group into ~120s pedagogical segments
-            grouped = []
-            cur_texts = []
-            cur_start = raw_segments[0]["start"]
-            cur_end = cur_start
-
-            for item in raw_segments:
-                cur_texts.append(item["text"])
-                cur_end = item["end"]
-                if (cur_end - cur_start) >= 120.0 or len(" ".join(cur_texts).split()) >= 150:
-                    chunk_text = " ".join(cur_texts)
-                    grouped.append({
-                        "timestamp_start": cur_start,
-                        "timestamp_end": cur_end,
-                        "timestamp_start_formatted": format_timestamp(cur_start),
-                        "timestamp_end_formatted": format_timestamp(cur_end),
-                        "transcript": chunk_text,
-                        "key_concepts": [w.capitalize() for w in chunk_text.split()[:4] if len(w) > 4]
-                    })
-                    cur_texts = []
-                    cur_start = cur_end
-
-            if cur_texts:
-                chunk_text = " ".join(cur_texts)
-                grouped.append({
-                    "timestamp_start": cur_start,
-                    "timestamp_end": cur_end,
-                    "timestamp_start_formatted": format_timestamp(cur_start),
-                    "timestamp_end_formatted": format_timestamp(cur_end),
-                    "transcript": chunk_text,
-                    "key_concepts": [w.capitalize() for w in chunk_text.split()[:4] if len(w) > 4]
-                })
-
-            return grouped
+            return _group_timed_utterances(raw_segments, video_id=video_id)
         except Exception as e:
             logger.warning(f"Local faster-whisper transcription encountered: {e}")
             return []
@@ -261,68 +372,140 @@ class VideoIngestionService:
             return []
 
     def _generate_default_segments(self, filename: str) -> List[Dict[str, Any]]:
-        """Provides structured timestamped segments for course videos."""
+        """
+        Fallback placeholder segments when neither captions nor audio transcription succeeded.
+        Explicitly marked with is_fallback=True so the tutor states the transcript limitation
+        rather than fabricating specific lecture timestamps.
+        """
         return [
             {
                 "timestamp_start": 0.0,
-                "timestamp_end": 184.0,
-                "timestamp_start_formatted": "00:00",
-                "timestamp_end_formatted": "03:04",
-                "transcript": f"Welcome everyone to this lecture session from {filename}. Today we are going to explore the core foundational principles, state characterizations, and algorithmic proofs.",
-                "key_concepts": ["Introduction", "Overview", "Prerequisites"]
-            },
-            {
-                "timestamp_start": 184.0,
-                "timestamp_end": 745.0,
-                "timestamp_start_formatted": "03:04",
-                "timestamp_end_formatted": "12:25",
-                "transcript": f"In this section of {filename}, we examine the formal theoretical representation and governing principles in detail. We systematically define variables, pre-conditions, and boundary constraints.",
-                "key_concepts": ["Formal Representation", "Pre-conditions", "Boundary Constraints"]
-            },
-            {
-                "timestamp_start": 745.0,
-                "timestamp_end": 1420.0,
-                "timestamp_start_formatted": "12:25",
-                "timestamp_end_formatted": "23:40",
-                "transcript": f"Now we formulate the operational criteria and execution transitions for {filename}. Notice how invariant properties are preserved throughout the sequence of operations.",
-                "key_concepts": ["Operational Criteria", "State Invariants", "Execution Transitions"]
-            },
-            {
-                "timestamp_start": 1420.0,
-                "timestamp_end": 2114.0,
-                "timestamp_start_formatted": "23:40",
-                "timestamp_end_formatted": "35:14",
-                "transcript": f"Here is a complete worked walkthrough and practical problem demonstration. We evaluate the input variables step by step and verify correctness against empirical standards.",
-                "key_concepts": ["Worked Example", "Verification", "Empirical Evaluation"]
+                "timestamp_end": 0.0,
+                "timestamp_start_formatted": "N/A",
+                "timestamp_end_formatted": "N/A",
+                "transcript": (
+                    f"[Transcript Unavailable for {filename}] "
+                    f"No caption track or speech transcript could be extracted for {filename}. "
+                    f"Exact timestamps and spoken explanations from this video cannot be verified."
+                ),
+                "key_concepts": ["Transcript Unavailable"],
+                "is_fallback": True
             }
         ]
 
     def _parse_transcript_file(self, file_path: Path) -> List[Dict[str, Any]]:
-        segments = []
+        """Parses .vtt, .srt, or timestamped .txt files with exact start/end seconds."""
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = [l.strip() for l in f if l.strip()]
+            raw_lines = [l.strip() for l in f]
 
-        for i, line in enumerate(lines):
+        cues: List[Dict[str, Any]] = []
+        i = 0
+        n = len(raw_lines)
+        while i < n:
+            line = raw_lines[i]
             if "-->" in line:
                 parts = line.split("-->")
                 start_str = parts[0].strip()
-                end_str = parts[1].strip()
-                text = lines[i+1] if i+1 < len(lines) else ""
-                segments.append({
+                end_str = parts[1].strip().split(" ")[0]
+                start_sec = parse_timestamp_to_seconds(start_str)
+                end_sec = parse_timestamp_to_seconds(end_str)
+                if end_sec < start_sec:
+                    end_sec = start_sec + 5.0
+
+                text_lines = []
+                i += 1
+                while i < n and raw_lines[i] and "-->" not in raw_lines[i]:
+                    # Skip numeric SRT cue indices if the next line is a timestamp arrow
+                    if raw_lines[i].isdigit() and (i + 1 < n and "-->" in raw_lines[i + 1]):
+                        break
+                    text_lines.append(raw_lines[i])
+                    i += 1
+                cue_text = " ".join(text_lines).strip()
+                if cue_text:
+                    cues.append({
+                        "start": start_sec,
+                        "end": end_sec,
+                        "text": cue_text
+                    })
+            else:
+                i += 1
+
+        if not cues:
+            # Plain text transcript fallback
+            non_empty = [l for l in raw_lines if l and not l.upper().startswith("WEBVTT")]
+            if non_empty:
+                full_text = " ".join(non_empty)
+                return [{
                     "timestamp_start": 0.0,
                     "timestamp_end": 60.0,
-                    "timestamp_start_formatted": start_str[:8],
-                    "timestamp_end_formatted": end_str[:8],
-                    "transcript": text,
-                    "key_concepts": []
+                    "timestamp_start_formatted": "00:00",
+                    "timestamp_end_formatted": "01:00",
+                    "transcript": full_text,
+                    "key_concepts": _extract_segment_concepts(full_text),
+                    "is_fallback": False
+                }]
+            return []
+
+        # If cues are already topic-sized segments (e.g. <= 12 cues or average duration >= 20s),
+        # preserve each cue's exact start/end boundaries directly while also attaching sub_segments.
+        avg_dur = sum(max(0.0, c["end"] - c["start"]) for c in cues) / max(1, len(cues))
+        if len(cues) <= 12 or avg_dur >= 20.0:
+            segments = []
+            for c in cues:
+                s_sec = round(c["start"], 2)
+                e_sec = round(c["end"], 2)
+                s_fmt = format_timestamp(s_sec)
+                e_fmt = format_timestamp(e_sec)
+                segments.append({
+                    "timestamp_start": s_sec,
+                    "timestamp_end": e_sec,
+                    "timestamp_start_formatted": s_fmt,
+                    "timestamp_end_formatted": e_fmt,
+                    "transcript": f"[{s_fmt}] {c['text']}",
+                    "plain_transcript": c["text"],
+                    "sub_segments": [{
+                        "start": s_sec,
+                        "end": e_sec,
+                        "start_formatted": s_fmt,
+                        "end_formatted": e_fmt,
+                        "text": c["text"]
+                    }],
+                    "key_concepts": _extract_segment_concepts(c["text"]),
+                    "is_fallback": False
                 })
-        return segments
+            return segments
+
+        return _group_timed_utterances(cues)
+
+    def _transcribe_youtube_audio_with_whisper(self, video_id: str) -> List[Dict[str, Any]]:
+        """Downloads audio stream via yt-dlp and transcribes with local faster-whisper when captions are missing."""
+        import tempfile
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        try:
+            import yt_dlp
+            with tempfile.TemporaryDirectory() as tmpdir:
+                out_tmpl = str(Path(tmpdir) / f"{video_id}.%(ext)s")
+                ydl_opts = {
+                    "format": "worstaudio/worst",
+                    "outtmpl": out_tmpl,
+                    "quiet": True,
+                    "no_warnings": True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([url])
+                downloaded = list(Path(tmpdir).glob(f"{video_id}.*"))
+                if not downloaded:
+                    return []
+                return self.transcribe_with_whisper(str(downloaded[0]), video_id=video_id)
+        except Exception as e:
+            logger.warning(f"yt-dlp audio + faster-whisper fallback failed for {video_id}: {e}")
+            return []
 
     def ingest_youtube_transcript(self, url_or_id: str) -> List[Dict[str, Any]]:
         """
         Extracts timestamped lecture segments from a YouTube video URL or ID.
         Groups speech into logical topic segments (e.g. 00:00 - 02:35, 02:35 - 04:40)
-        with exact timestamp intervals for grounded pedagogical tutoring.
+        with exact timestamp intervals and inline sub-timestamps for grounded pedagogical tutoring.
         """
         video_id = extract_youtube_video_id(url_or_id) or url_or_id
         if not video_id or len(video_id) < 11:
@@ -388,50 +571,18 @@ class VideoIngestionService:
             logger.info(f"Attempting yt-dlp direct subtitle extraction fallback for {video_id}...")
             transcript_items = self._fetch_yt_dlp_subtitles(video_id)
 
-        # Final fallback: structured lecture segments
+        # Tertiary fallback: download lightweight audio stream via yt-dlp and transcribe with faster-whisper
+        if not transcript_items:
+            logger.info(f"Attempting yt-dlp audio + faster-whisper transcription for {video_id}...")
+            whisper_segs = self._transcribe_youtube_audio_with_whisper(video_id)
+            if whisper_segs:
+                return whisper_segs
+
+        # Final fallback: explicit unavailable-transcript marker (never fabricates fake timestamps)
         if not transcript_items:
             return self._generate_default_segments(f"YouTube_{video_id}")
 
-        # Group raw subtitles into coherent ~120-180 second topic chunks
-        segments = []
-        cur_texts = []
-        cur_start = transcript_items[0].get("start", 0.0) if isinstance(transcript_items[0], dict) else getattr(transcript_items[0], "start", 0.0)
-        cur_end = cur_start
-
-        for item in transcript_items:
-            start = item.get("start", 0.0) if isinstance(item, dict) else getattr(item, "start", 0.0)
-            duration = item.get("duration", 0.0) if isinstance(item, dict) else getattr(item, "duration", 0.0)
-            text = (item.get("text", "") if isinstance(item, dict) else getattr(item, "text", "")).strip()
-            if text:
-                cur_texts.append(text)
-            cur_end = start + duration
-
-            if (cur_end - cur_start) >= 120.0 or len(" ".join(cur_texts).split()) >= 150:
-                full_chunk_text = " ".join(cur_texts)
-                segments.append({
-                    "timestamp_start": cur_start,
-                    "timestamp_end": cur_end,
-                    "timestamp_start_formatted": format_timestamp(cur_start),
-                    "timestamp_end_formatted": format_timestamp(cur_end),
-                    "transcript": full_chunk_text,
-                    "video_url": f"https://www.youtube.com/watch?v={video_id}&t={int(cur_start)}s",
-                    "key_concepts": [w.capitalize() for w in full_chunk_text.split()[:4] if len(w) > 4]
-                })
-                cur_texts = []
-                cur_start = cur_end
-
-        if cur_texts:
-            full_chunk_text = " ".join(cur_texts)
-            segments.append({
-                "timestamp_start": cur_start,
-                "timestamp_end": cur_end,
-                "timestamp_start_formatted": format_timestamp(cur_start),
-                "timestamp_end_formatted": format_timestamp(cur_end),
-                "transcript": full_chunk_text,
-                "video_url": f"https://www.youtube.com/watch?v={video_id}&t={int(cur_start)}s",
-                "key_concepts": [w.capitalize() for w in full_chunk_text.split()[:4] if len(w) > 4]
-            })
-
+        segments = _group_timed_utterances(transcript_items, video_id=video_id)
         logger.info(f"Successfully extracted {len(segments)} timestamped lecture segments from YouTube video {video_id}")
         return segments
 

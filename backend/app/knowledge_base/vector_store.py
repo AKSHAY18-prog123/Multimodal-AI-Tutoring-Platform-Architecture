@@ -63,11 +63,58 @@ class VectorStoreManager:
         )
         logger.info(f"Successfully upserted {len(chunks)} chunks into vector store.")
 
+    def _build_where_filter(
+        self,
+        course_id: Optional[str] = None,
+        source_type: Optional[Any] = None,
+        document_id: Optional[Any] = None,
+        page_number: Optional[int] = None,
+        slide_number: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        filter_conditions = []
+        if course_id and course_id != "all":
+            filter_conditions.append({"course_id": course_id})
+        if document_id:
+            if isinstance(document_id, (list, tuple, set)):
+                doc_ids = [str(d) for d in document_id if d]
+                if len(doc_ids) == 1:
+                    filter_conditions.append({"document_id": doc_ids[0]})
+                elif len(doc_ids) > 1:
+                    filter_conditions.append({"document_id": {"$in": doc_ids}})
+            else:
+                filter_conditions.append({"document_id": str(document_id)})
+        if source_type:
+            if source_type == "document":
+                filter_conditions.append({"source_type": {"$in": ["pdf", "pptx"]}})
+            elif source_type == "youtube":
+                filter_conditions.append({"source_type": "video"})
+            elif isinstance(source_type, (list, tuple, set)):
+                stypes = [str(s) for s in source_type if s]
+                if len(stypes) == 1:
+                    filter_conditions.append({"source_type": stypes[0]})
+                elif len(stypes) > 1:
+                    filter_conditions.append({"source_type": {"$in": stypes}})
+            else:
+                filter_conditions.append({"source_type": str(source_type)})
+        if page_number is not None:
+            filter_conditions.append({"page_number": int(page_number)})
+        if slide_number is not None:
+            filter_conditions.append({"slide_number": int(slide_number)})
+
+        if not filter_conditions:
+            return None
+        if len(filter_conditions) == 1:
+            return filter_conditions[0]
+        return {"$and": filter_conditions}
+
     async def search(
         self,
         query: str,
         course_id: Optional[str] = None,
-        source_type: Optional[str] = None,
+        source_type: Optional[Any] = None,
+        document_id: Optional[Any] = None,
+        page_number: Optional[int] = None,
+        slide_number: Optional[int] = None,
         top_k: int = 10
     ) -> List[Dict[str, Any]]:
         """
@@ -75,23 +122,18 @@ class VectorStoreManager:
         Returns list of matched chunks with cosine similarity / relevance scores.
         """
         query_emb = await self.embedding_provider.embed_text(query)
-
-        where_filter = None
-        filter_conditions = []
-        if course_id:
-            filter_conditions.append({"course_id": course_id})
-        if source_type:
-            filter_conditions.append({"source_type": source_type})
-
-        if len(filter_conditions) == 1:
-            where_filter = filter_conditions[0]
-        elif len(filter_conditions) > 1:
-            where_filter = {"$and": filter_conditions}
+        where_filter = self._build_where_filter(
+            course_id=course_id,
+            source_type=source_type,
+            document_id=document_id,
+            page_number=page_number,
+            slide_number=slide_number
+        )
 
         try:
             results = self.collection.query(
                 query_embeddings=[query_emb],
-                n_results=top_k,
+                n_results=max(1, top_k),
                 where=where_filter,
                 include=["documents", "metadatas", "distances"]
             )
@@ -119,6 +161,50 @@ class VectorStoreManager:
                 })
 
         return hits
+
+    def get_chunks_by_filter(
+        self,
+        course_id: Optional[str] = None,
+        source_type: Optional[Any] = None,
+        document_id: Optional[Any] = None,
+        page_number: Optional[int] = None,
+        slide_number: Optional[int] = None,
+        limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches chunks directly from ChromaDB by metadata filter (used for BM25 corpus scan,
+        exact page/slide/timestamp lookup, neighbor expansion, and full-syllabus teaching).
+        """
+        where_filter = self._build_where_filter(
+            course_id=course_id,
+            source_type=source_type,
+            document_id=document_id,
+            page_number=page_number,
+            slide_number=slide_number
+        )
+        try:
+            res = self.collection.get(
+                where=where_filter,
+                limit=limit,
+                include=["documents", "metadatas"]
+            )
+        except Exception as e:
+            logger.error(f"Chroma collection.get failed: {e}")
+            return []
+
+        chunks = []
+        if res and res.get("ids"):
+            ids = res["ids"]
+            docs = res.get("documents") or []
+            metas = res.get("metadatas") or []
+            for i, cid in enumerate(ids):
+                chunks.append({
+                    "id": cid,
+                    "content": docs[i] if i < len(docs) else "",
+                    "metadata": metas[i] if i < len(metas) else {},
+                    "vector_score": 0.5
+                })
+        return chunks
 
     def delete_by_document_id(self, document_id: str) -> int:
         """Deletes all chunks associated with a specific document from ChromaDB."""

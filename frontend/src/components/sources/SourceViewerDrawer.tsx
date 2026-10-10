@@ -95,9 +95,10 @@ export const SourceViewerDrawer: React.FC<SourceViewerDrawerProps> = ({ citation
               <span>Attributed in RAG Context</span>
             </div>
             <div className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed font-serif bg-slate-50/70 dark:bg-slate-950/50 p-4 rounded-lg border border-slate-100 dark:border-slate-800">
-              <p>
-                "{citation.source_file} • {citation.label}: Verified course excerpt indexed from primary learning material.
-                Presents definitions, governing principles, and structural analysis corresponding to this academic topic."
+              <p className="whitespace-pre-line">
+                {citation.snippet
+                  ? `"${citation.snippet}"`
+                  : `"${citation.source_file} • ${citation.label}: Verified course excerpt indexed from primary learning material."`}
               </p>
             </div>
           </div>
@@ -115,10 +116,22 @@ export const SourceViewerDrawer: React.FC<SourceViewerDrawerProps> = ({ citation
                 {citation.slide_number ? `Centered on Slide ${citation.slide_number}` : ''}
                 {citation.timestamp_formatted ? `Seeked to ${citation.timestamp_formatted}` : ''}
               </p>
-              <div className="mt-4 px-3 py-1.5 rounded-lg bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
-                <ExternalLink className="w-3.5 h-3.5" />
-                Exact Canonical Source Match (100% Grounded)
-              </div>
+              {citation.video_url ? (
+                <a
+                  href={citation.video_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-4 px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white flex items-center gap-1.5 transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open Video at {citation.timestamp_formatted || 'Timestamp'}
+                </a>
+              ) : (
+                <div className="mt-4 px-3 py-1.5 rounded-lg bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Exact Canonical Source Match (100% Grounded)
+                </div>
+              )}
             </div>
           </div>
         </div>

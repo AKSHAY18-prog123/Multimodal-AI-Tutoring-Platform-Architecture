@@ -3,10 +3,8 @@ import {
   LayoutDashboard, 
   MessageSquare, 
   CheckSquare, 
-  Network, 
   FolderOpen, 
   UserCircle, 
-  TrendingUp, 
   Sparkles,
   BookOpen,
   Sun,
@@ -33,10 +31,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'tutor', label: 'Tutor Chat', icon: MessageSquare },
     { id: 'assessments', label: 'Adaptive Tests', icon: CheckSquare },
-    { id: 'explorer', label: 'Knowledge Explorer', icon: Network },
     { id: 'courses', label: 'Course Library', icon: FolderOpen },
     { id: 'profile', label: 'Learner Profile', icon: UserCircle },
-    { id: 'analytics', label: 'Analytics', icon: TrendingUp },
   ];
 
   const initials = studentName

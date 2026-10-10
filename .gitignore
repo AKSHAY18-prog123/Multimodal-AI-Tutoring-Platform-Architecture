@@ -44,6 +44,7 @@ storage/uploads/*
 !storage/uploads/.gitkeep
 storage/processed/*
 !storage/processed/.gitkeep
+storage/*.txt
 
 # Node / Frontend
 frontend/node_modules/
@@ -62,3 +63,9 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Testing & Scratch Files
+.pytest_cache/
+scratch/
+scratch*
+

@@ -16,6 +16,7 @@ class ContextBuilder:
             slide = meta.get("slide_number")
             t_start = meta.get("timestamp_start_formatted")
             t_end = meta.get("timestamp_end_formatted")
+            video_url = meta.get("video_url")
 
             location_tag = ""
             if page is not None:
@@ -24,6 +25,8 @@ class ContextBuilder:
                 location_tag = f"Slide: {slide}"
             elif t_start is not None:
                 location_tag = f"Timestamp: {t_start} - {t_end}"
+                if video_url:
+                    location_tag += f" | VideoURL: {video_url}"
 
             header = f"--- [SOURCE #{idx} | Type: {stype.upper()} | File: {sfile} | {location_tag}] ---"
             body = chunk.get("content", "").strip()

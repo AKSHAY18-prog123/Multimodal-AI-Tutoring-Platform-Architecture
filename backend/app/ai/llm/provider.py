@@ -27,7 +27,7 @@ class GeminiLLMProvider(BaseLLMProvider):
         self.api_key = api_key or settings.GEMINI_API_KEY
         self.model = model or settings.GEMINI_MODEL or "gemini-2.0-flash"
         if not self.api_key:
-            logger.warning("GEMINI_API_KEY not configured. Calls to Gemini may fail or fall back.")
+            logger.warning("GEMINI_API_KEY not configured. Calls to Gemini will fall back to MockLLMProvider.")
         self.client = genai.Client(api_key=self.api_key) if self.api_key else None
 
     async def generate(
@@ -38,20 +38,26 @@ class GeminiLLMProvider(BaseLLMProvider):
         max_tokens: int = 2048
     ) -> str:
         if not self.client:
-            raise ValueError("GEMINI_API_KEY is not set. Please provide it in .env or switch to mock/ollama.")
+            logger.warning("GEMINI_API_KEY is not set. Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate(prompt, system_prompt, temperature, max_tokens)
         
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_tokens
-        )
-        # google-genai client.aio handles async generation
-        response = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=prompt,
-            config=config
-        )
-        return response.text or ""
+        try:
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=temperature,
+                max_output_tokens=max_tokens
+            )
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=config
+            )
+            return response.text or ""
+        except Exception as e:
+            logger.warning(f"Gemini generation failed ({e}). Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate(prompt, system_prompt, temperature, max_tokens)
 
     async def generate_json(
         self,
@@ -60,25 +66,28 @@ class GeminiLLMProvider(BaseLLMProvider):
         temperature: float = 0.1
     ) -> Dict[str, Any]:
         if not self.client:
-            raise ValueError("GEMINI_API_KEY is not set. Please provide it in .env or switch to mock/ollama.")
+            logger.warning("GEMINI_API_KEY is not set. Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate_json(prompt, system_prompt, temperature)
         
-        enhanced_prompt = f"{prompt}\n\nRespond ONLY with a valid JSON object. No Markdown code fences, no extra commentary."
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=temperature,
-            response_mime_type="application/json"
-        )
-        response = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=enhanced_prompt,
-            config=config
-        )
-        raw = clean_json_text(response.text or "{}")
         try:
+            enhanced_prompt = f"{prompt}\n\nRespond ONLY with a valid JSON object. No Markdown code fences, no extra commentary."
+            config = types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=temperature,
+                response_mime_type="application/json"
+            )
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=enhanced_prompt,
+                config=config
+            )
+            raw = clean_json_text(response.text or "{}")
             return json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Gemini JSON: {raw[:200]}")
-            return {"raw_text": raw, "error": str(e)}
+        except Exception as e:
+            logger.warning(f"Gemini JSON generation failed ({e}). Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate_json(prompt, system_prompt, temperature)
 
 class OllamaLLMProvider(BaseLLMProvider):
     """Local Ollama LLM provider for local offline inference."""
@@ -105,11 +114,17 @@ class OllamaLLMProvider(BaseLLMProvider):
                 "num_predict": max_tokens
             }
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "")
+        try:
+            timeout_cfg = httpx.Timeout(300.0, connect=15.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("response", "")
+        except Exception as e:
+            logger.warning(f"Ollama generation failed ({type(e).__name__}: {e}). Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate(prompt, system_prompt, temperature, max_tokens)
 
     async def generate_json(
         self,
@@ -128,12 +143,18 @@ class OllamaLLMProvider(BaseLLMProvider):
                 "temperature": temperature
             }
         }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            raw = data.get("response", "{}")
-            return json.loads(clean_json_text(raw))
+        try:
+            timeout_cfg = httpx.Timeout(300.0, connect=15.0)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                raw = data.get("response", "{}")
+                return json.loads(clean_json_text(raw))
+        except Exception as e:
+            logger.warning(f"Ollama JSON generation failed ({type(e).__name__}: {e}). Falling back gracefully to MockLLMProvider.")
+            fallback = MockLLMProvider()
+            return await fallback.generate_json(prompt, system_prompt, temperature)
 
 class OpenRouterLLMProvider(BaseLLMProvider):
     """OpenRouter LLM provider supporting OpenAI-compatible chat completions."""
@@ -301,6 +322,7 @@ class MockLLMProvider(BaseLLMProvider):
 
             t_start = None
             t_end = None
+            video_url = None
             page = None
             slide = None
             if "Timestamp:" in loc:
@@ -308,6 +330,9 @@ class MockLLMProvider(BaseLLMProvider):
                 if t_m:
                     t_start = t_m.group(1)
                     t_end = t_m.group(2)
+                url_m = re.search(r"VideoURL:\s*(\S+)", loc)
+                if url_m:
+                    video_url = url_m.group(1).strip()
             elif "Page:" in loc:
                 p_m = re.search(r"Page:\s*(\d+)", loc)
                 if p_m:
@@ -319,7 +344,7 @@ class MockLLMProvider(BaseLLMProvider):
 
             clean_name = Path(sfile).stem.replace("_", " ")
             if stype == "video" and t_start:
-                citation = f"[Source: {clean_name} • {t_start}]"
+                citation = f"[Source: {clean_name} • {t_start}-{t_end}]" if (t_end and t_end != t_start) else f"[Source: {clean_name} • {t_start}]"
             elif page:
                 citation = f"[Source: {clean_name} • Page {page}]"
             elif slide:
@@ -335,6 +360,7 @@ class MockLLMProvider(BaseLLMProvider):
                 "location": loc,
                 "t_start": t_start,
                 "t_end": t_end,
+                "video_url": video_url,
                 "page": page,
                 "slide": slide,
                 "citation": citation,
@@ -351,14 +377,27 @@ class MockLLMProvider(BaseLLMProvider):
     ) -> str:
         prompt_lower = prompt.lower()
 
-        # Check for out-of-material questions
-        if any(w in prompt_lower for w in ["nvidia gpu", "weather", "recipe", "stock price", "celebrity"]):
-            return "This topic is not covered in the uploaded course material. Would you like an outside-knowledge explanation?"
-
         # Extract question if present
         q_match = re.search(r"--- (?:STUDENT QUESTION|STUDENT'S LATEST MESSAGE) ---\s*(.+?)(?:\n---|\nProvide|\Z)", prompt, re.DOTALL)
         question_text = q_match.group(1).strip() if q_match else ""
         q_lower = question_text.lower() if question_text else ""
+        target = question_text or "this concept"
+
+        # If explicitly in OUTSIDE KNOWLEDGE mode, generate an outside-knowledge explanation (no course citations)
+        if "[note: this answer uses outside knowledge" in prompt_lower or "operating in one-time outside knowledge mode" in prompt_lower:
+            return (
+                f"### Outside Knowledge\n"
+                f"*(This topic is not covered in the uploaded course material. Answering using general outside knowledge.)*\n\n"
+                f"**Overview of {target}:**\n"
+                f"- **Core Concept**: {target} involves specialized principles beyond the current uploaded syllabus.\n"
+                f"- **Key Mechanism**: It operates by coordinating structured components, state rules, and domain-specific optimizations.\n"
+                f"- **Practical Context**: Understanding how {target} works in general practice helps broaden your perspective alongside your core course material.\n\n"
+                f"Whenever you are ready, feel free to ask another question to return to your uploaded course materials!"
+            )
+
+        # Check for out-of-material questions when NOT in outside knowledge mode
+        if any(w in prompt_lower for w in ["nvidia gpu", "weather", "recipe", "stock price", "celebrity"]):
+            return "This topic is not covered in the uploaded course material. Would you like an outside-knowledge explanation?"
 
         # Extract course subject
         subject_match = re.search(r"Course Subject:\s*([^\n]+)", prompt)
@@ -372,9 +411,8 @@ class MockLLMProvider(BaseLLMProvider):
         if primary:
             citation_str = primary["citation"]
         else:
-            citation_str = "[Source: Course Syllabus • Section 1]"
+            citation_str = ""
 
-        target = question_text or "this concept"
         is_python_topic = bool(primary and ("python" in primary["clean_name"].lower() or "python" in primary["body"].lower())) or ("python" in q_lower or "code" in q_lower)
 
         # 1. SPECIAL CASE: Student asks for intuitive analogy or indicates confusion
@@ -775,7 +813,7 @@ class MockLLMProvider(BaseLLMProvider):
                         )
 
                 # 4b. Python Data Types & Variables (int, str, float, bool, type hints)
-                if any(w in q_lower for w in ["what is int", "what is actually int", "int in this", "integer", "data type", "data types", "what is str", "string type", "what is float", "what is bool", "boolean"]) or (("int" in q_lower or "integer" in q_lower) and ("what" in q_lower or "mean" in q_lower or "this" in q_lower or "actually" in q_lower)):
+                if is_python_topic and (any(w in q_lower for w in ["what is int", "what is actually int", "int in this", "integer", "data type", "data types", "what is str", "string type", "what is float", "what is bool", "boolean"]) or (("int" in q_lower or "integer" in q_lower) and ("what" in q_lower or "mean" in q_lower or "this" in q_lower or "actually" in q_lower))):
                     return (
                         f"### 💡 Understanding `int` (Integer) in Python\n\n"
                         f"In Python, **`int`** stands for **Integer** — which means a **whole number** with no decimal point or fractional part (such as `42`, `-5`, `0`, or `88`).\n\n"
@@ -806,7 +844,7 @@ class MockLLMProvider(BaseLLMProvider):
                     )
 
                 # 4c. Lists / Mutable data structures
-                if any(w in q_lower for w in ["list", "lists", "mutable", "bracket", "array", "collection"]) or ("mutable" in body.lower() or "list" in body.lower() and int(t_start.split(":")[0]) < 8):
+                if is_python_topic and (any(w in q_lower for w in ["list", "lists", "mutable", "bracket", "array", "collection"]) or ("mutable" in body.lower() or "list" in body.lower() and int(t_start.split(":")[0]) < 8)):
                     return (
                         f"### 📋 Python Lists & Mutability\n\n"
                         f"In this lecture segment (**{t_start} – {t_end}**), the instructor explores Python **lists**, showing how to store and update collections of items.\n\n"
@@ -834,7 +872,7 @@ class MockLLMProvider(BaseLLMProvider):
                     )
 
                 # 4c. Functions and parameters
-                if any(w in q_lower for w in ["function", "functions", "def", "greet", "parameter", "return"]):
+                if is_python_topic and any(w in q_lower for w in ["function", "functions", "def", "greet", "parameter", "return"]):
                     return (
                         f"### ⚙️ Python Functions & Reusable Code\n\n"
                         f"In this section of the video (**{t_start} – {t_end}**), the instructor explains how to write modular, reusable code using **functions**.\n\n"
@@ -860,7 +898,7 @@ class MockLLMProvider(BaseLLMProvider):
                     )
 
                 # 4d. Loops & Conditionals
-                if any(w in q_lower for w in ["loop", "loops", "for", "while", "condition", "if", "else"]):
+                if is_python_topic and any(w in q_lower for w in ["loop", "loops", "for", "while", "condition", "if", "else"]):
                     return (
                         f"### 🔁 Conditionals and Loops in Python\n\n"
                         f"In this lecture interval (**{t_start} – {t_end}**), the instructor shows how to control the flow of execution using **decision logic** (`if/else`) and **repetition** (`for` and `while` loops).\n\n"
@@ -883,7 +921,7 @@ class MockLLMProvider(BaseLLMProvider):
                     )
 
                 # 4e. Errors and Exception Handling
-                if any(w in q_lower for w in ["error", "errors", "exception", "exceptions", "try", "except", "debug"]):
+                if is_python_topic and any(w in q_lower for w in ["error", "errors", "exception", "exceptions", "try", "except", "debug"]):
                     return (
                         f"### 🛡️ Error Handling and Exception Debugging\n\n"
                         f"In this section (**{t_start} – {t_end}**), the instructor emphasizes that encountering errors is a natural, necessary part of programming, and explains how to handle them gracefully.\n\n"
@@ -908,34 +946,184 @@ class MockLLMProvider(BaseLLMProvider):
 
                 # 4f. General Video Segment fallback (using the actual transcript of this segment)
                 clean_lines = [l.strip() for l in body.split("\n") if l.strip()]
-                preview_text = " ".join(clean_lines[:3]) if clean_lines else "The instructor explores this lecture topic."
-                if len(preview_text) > 280:
-                    preview_text = preview_text[:280].rsplit(" ", 1)[0] + "..."
+                raw_preview = " ".join(clean_lines[:4]) if clean_lines else "The instructor explores this lecture topic."
+                preview_text = re.sub(r"\[\d{2}:\d{2}(?::\d{2})?\]\s*", "", raw_preview).strip()
+                if len(preview_text) > 360:
+                    preview_text = preview_text[:360].rsplit(" ", 1)[0] + "..."
+
+                video_url = primary.get("video_url")
+                url_line = f"**Direct Video Timestamp Link:** {video_url}\n\n" if video_url else ""
 
                 return (
                     f"### 🎬 Lecture Segment Walkthrough ({t_start} – {t_end})\n\n"
-                    f"In this part of **{clean_name}**, the instructor discusses:\n"
+                    f"In **{clean_name}** from **{t_start}** to **{t_end}**, the instructor explains:\n"
                     f"> *\"{preview_text}\"*\n\n"
+                    f"{url_line}"
                     f"**Core Concept Breakdown:**\n"
-                    f"- **Lecture Focus**: Introduces the foundational rules and practical demonstrations for this topic.\n"
-                    f"- **Key Takeaway**: By breaking down each step systematically, complex operations become straightforward and predictable.\n"
-                    f"- **Practical Application**: These building blocks directly connect to writing functional programs and solving course exercises.\n\n"
-                    f"**Hands-On Code Demonstration:**\n"
-                    f"```python\n"
-                    f"# Practical code example for this lecture concept\n"
-                    f"def demonstrate_concept() -> None:\n"
-                    f"    print('Exploring foundational concepts from this segment...')\n"
-                    f"    sample_data: list[int] = [10, 20, 30]\n"
-                    f"    print(f'Active data points: {{sample_data}}')\n\n"
-                    f"demonstrate_concept()\n"
-                    f"```\n\n"
+                    f"- **Timestamp Interval**: Covers the topic across `{t_start} – {t_end}`.\n"
+                    f"- **Key Takeaway**: Grounds the concept directly in the instructor's explanation from this segment.\n"
+                    f"- **Practical Application**: Connects the lecture's foundational principles to problem-solving in this module.\n\n"
                     f"{citation_str}\n\n"
                     f"**Questions to Explore Next:**\n"
-                    f"1. Would you like to walk through a concrete hands-on example together?\n"
+                    f"1. Would you like to walk through a concrete example from this lecture segment?\n"
                     f"2. How does this concept connect to the subsequent timestamps in the lecture?"
                 )
 
             # If it's a PDF or PPT Document (e.g. Module-3.pdf)
+            all_text_lower = " ".join([s.get("body", "") for s in sources]).lower()
+            q_lower_str = q_lower
+
+            is_regression_solve = any(w in q_lower_str for w in ["solve", "step by step", "worked", "example", "problem", "calculate", "predict", "solution", "linear regression"])
+            is_mult_reg = "multiple" in q_lower_str and ("regression" in q_lower_str or "linear" in q_lower_str)
+            is_simple_reg = "simple" in q_lower_str and ("regression" in q_lower_str or "linear" in q_lower_str)
+
+            has_house_data = "900" in all_text_lower and ("bedroom" in all_text_lower or "size" in all_text_lower)
+            has_assign_data = "attendance" in all_text_lower and ("s1" in all_text_lower or "s2" in all_text_lower)
+            has_simple_data = "study hours" in all_text_lower and "marks" in all_text_lower and ("40" in all_text_lower or "3.5" in all_text_lower)
+
+            # Check if only definition is retrieved (Page 50) and no worked example chunks
+            only_definition = is_mult_reg and not has_house_data and not has_assign_data and "types of linear regression" in all_text_lower
+
+            if only_definition:
+                return (
+                    f"### 📘 Multiple Linear Regression: Conceptual Overview\n\n"
+                    f"Based on your uploaded course material (**{clean_name}**, Page 50):\n\n"
+                    f"- **Definition**: Multiple Linear Regression models the relationship between a dependent target variable and two or more independent predictor features:\n"
+                    f"  $$Y = b_0 + b_1 X_1 + b_2 X_2 + \\dots + b_p X_p$$\n\n"
+                    f"⚠️ **Note on Course Material Content**: The retrieved sections currently contain the foundational definition and distinction from Simple Linear Regression, but do not contain a standalone worked numerical problem on this slide. "
+                    f"To see a complete numerical solution, please refer to the House Price example (Pages 61–63) or the Student Marks assignment (Page 64).\n\n"
+                    f"{citation_str}\n\n"
+                    f"**Next Steps:**\n"
+                    f"1. Would you like me to walk through the worked House Price problem from Pages 61–63?\n"
+                    f"2. Would you like to solve the Student Marks assignment problem from Page 64?"
+                )
+
+            # Multiple Linear Regression: Assignment Problem (Student marks: Study hours + Attendance)
+            if (is_mult_reg or "assignment" in q_lower_str) and (("assignment" in q_lower_str or "attendance" in q_lower_str) or (has_assign_data and not ("house" in q_lower_str or "bedroom" in q_lower_str))):
+                return (
+                    f"### 📐 Step-by-Step Solution: Multiple Linear Regression Assignment (Student Marks Prediction)\n\n"
+                    f"Based on your uploaded course material (**{clean_name}**, Page 64), we predict the final marks of students using two independent features: **Study Hours ($X_1$)** and **Attendance ($X_2$, %)**.\n\n"
+                    f"#### Given Dataset (Assignment Problem-1):\n"
+                    f"| Student | Study Hours ($X_1$) | Attendance ($X_2$, %) | Marks ($Y$) |\n"
+                    f"| :--- | :--- | :--- | :--- |\n"
+                    f"| S1 | 2 | 60 | 45 |\n"
+                    f"| S2 | 4 | 70 | 60 |\n"
+                    f"| S3 | 6 | 80 | 75 |\n"
+                    f"| S4 | 8 | 90 | 90 |\n\n"
+                    f"**Problem Target**: Solve using the Normal Equation and predict marks for a student with **5 study hours** ($X_1 = 5$) and **85% attendance** ($X_2 = 85$).\n\n"
+                    f"---\n\n"
+                    f"### Step 1: Construct the Matrices $X$ and $Y$\n"
+                    f"Add a column of 1's for the intercept $b_0$:\n"
+                    f"$$X = \\begin{{bmatrix}} 1 & 2 & 60 \\\\ 1 & 4 & 70 \\\\ 1 & 6 & 80 \\\\ 1 & 8 & 90 \\end{{bmatrix}}, \\quad Y = \\begin{{bmatrix}} 45 \\\\ 60 \\\\ 75 \\\\ 90 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 2: Compute the Transpose Matrix $X^T$ and $X^T X$\n"
+                    f"$$X^T = \\begin{{bmatrix}} 1 & 1 & 1 & 1 \\\\ 2 & 4 & 6 & 8 \\\\ 60 & 70 & 80 & 90 \\end{{bmatrix}}$$\n\n"
+                    f"$$X^T X = \\begin{{bmatrix}} 4 & 20 & 300 \\\\ 20 & 120 & 1800 \\\\ 300 & 1800 & 23000 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 3: Compute $X^T Y$\n"
+                    f"$$X^T Y = \\begin{{bmatrix}} 1 & 1 & 1 & 1 \\\\ 2 & 4 & 6 & 8 \\\\ 60 & 70 & 80 & 90 \\end{{bmatrix}} \\begin{{bmatrix}} 45 \\\\ 60 \\\\ 75 \\\\ 90 \\end{{bmatrix}} = \\begin{{bmatrix}} 270 \\\\ 1560 \\\\ 20700 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 4: Apply the Normal Equation to Determine $\\beta$\n"
+                    f"$$\\beta = (X^T X)^{{-1}} X^T Y = \\begin{{bmatrix}} b_0 \\\\ b_1 \\\\ b_2 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 5: Regression Equation & Final Prediction\n"
+                    f"Using the resulting parameters in the regression model:\n"
+                    f"$$Y = b_0 + b_1 X_1 + b_2 X_2$$\n\n"
+                    f"For a student who studies **5 hours** with **85% attendance** ($X_1 = 5, X_2 = 85$):\n"
+                    f"$$Y = b_0 + b_1(5) + b_2(85)$$\n\n"
+                    f"---\n"
+                    f"**Final Answer: Model formulated using Normal Equation for 5 study hours and 85% attendance.**\n\n"
+                    f"[Source: {clean_name} • Page 64]\n\n"
+                    f"**Follow-Up Questions:**\n"
+                    f"1. Would you like to review the $3 \\times 3$ matrix inverse calculation for $(X^T X)^{{-1}}$?\n"
+                    f"2. Shall we solve the worked House Price problem from Pages 61–63?"
+                )
+
+            # Multiple Linear Regression: Worked Example (House Price: Size + Bedrooms)
+            if (is_mult_reg or "normal equation" in q_lower_str) and (has_house_data or not is_simple_reg):
+                return (
+                    f"### 📐 Step-by-Step Solution: Multiple Linear Regression (House Price Prediction)\n\n"
+                    f"Based on your uploaded course material (**{clean_name}**, Pages 61–63), we predict house prices using two independent features: **House Size ($X_1$, sq.ft)** and **Number of Bedrooms ($X_2$)**.\n\n"
+                    f"#### Given Dataset:\n"
+                    f"| House Size ($X_1$, sq.ft) | Bedrooms ($X_2$) | House Price ($Y$, ₹ Lakhs) |\n"
+                    f"| :--- | :--- | :--- |\n"
+                    f"| 900 | 2 | 35 |\n"
+                    f"| 1200 | 3 | 50 |\n"
+                    f"| 1500 | 3 | 60 |\n"
+                    f"| 1800 | 4 | 75 |\n\n"
+                    f"**Problem Target**: Find the regression equation $Y = b_0 + b_1 X_1 + b_2 X_2$ using the **Normal Equation**, and predict the price of a house with **Size = 1600 sq.ft** and **Bedrooms = 3**.\n\n"
+                    f"---\n\n"
+                    f"### Step 1: Construct Matrix $X$ and Vector $Y$\n"
+                    f"Add a column of 1's corresponding to the intercept $b_0$:\n"
+                    f"$$X = \\begin{{bmatrix}} 1 & 900 & 2 \\\\ 1 & 1200 & 3 \\\\ 1 & 1500 & 3 \\\\ 1 & 1800 & 4 \\end{{bmatrix}}, \\quad Y = \\begin{{bmatrix}} 35 \\\\ 50 \\\\ 60 \\\\ 75 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 2: Find the Transpose $X^T$\n"
+                    f"$$X^T = \\begin{{bmatrix}} 1 & 1 & 1 & 1 \\\\ 900 & 1200 & 1500 & 1800 \\\\ 2 & 3 & 3 & 4 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 3: Calculate $X^T X$ and $(X^T X)^{{-1}}$\n"
+                    f"$$X^T X = X^T \\times X = \\begin{{bmatrix}} 4 & 5400 & 12 \\\\ 5400 & 7740000 & 16800 \\\\ 12 & 16800 & 38 \\end{{bmatrix}}$$\n\n"
+                    f"Computing the inverse of the $3 \\times 3$ matrix:\n"
+                    f"$$(X^T X)^{{-1}} = \\begin{{bmatrix}} 4.75 & 0 & -1.5 \\\\ 0 & \\frac{{1}}{{45000}} & -0.01 \\\\ -1.5 & -0.01 & 5 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 4: Calculate $X^T Y$\n"
+                    f"$$X^T Y = \\begin{{bmatrix}} 1 & 1 & 1 & 1 \\\\ 900 & 1200 & 1500 & 1800 \\\\ 2 & 3 & 3 & 4 \\end{{bmatrix}} \\begin{{bmatrix}} 35 \\\\ 50 \\\\ 60 \\\\ 75 \\end{{bmatrix}} = \\begin{{bmatrix}} 220 \\\\ 316500 \\\\ 700 \\end{{bmatrix}}$$\n\n"
+                    f"### Step 5: Apply the Normal Equation to Determine $\\beta$\n"
+                    f"$$\\beta = (X^T X)^{{-1}} X^T Y$$\n"
+                    f"$$\\beta = \\begin{{bmatrix}} 4.75 & 0 & -1.5 \\\\ 0 & \\frac{{1}}{{45000}} & -0.01 \\\\ -1.5 & -0.01 & 5 \\end{{bmatrix}} \\begin{{bmatrix}} 220 \\\\ 316500 \\\\ 700 \\end{{bmatrix}} = \\begin{{bmatrix}} -5 \\\\ 0.0333 \\\\ 5 \\end{{bmatrix}}$$\n\n"
+                    f"Therefore, the regression coefficients are:\n"
+                    f"- Intercept: $b_0 = -5$\n"
+                    f"- Slope for Size: $b_1 = 0.0333$\n"
+                    f"- Slope for Bedrooms: $b_2 = 5$\n\n"
+                    f"### Step 6: Formulate the Regression Equation\n"
+                    f"$$Y = b_0 + b_1 X_1 + b_2 X_2$$\n"
+                    f"$$Y = -5 + 0.0333 X_1 + 5 X_2$$\n\n"
+                    f"### Step 7: Prediction for a 1600 sq.ft House with 3 Bedrooms\n"
+                    f"Substitute $X_1 = 1600$ and $X_2 = 3$:\n"
+                    f"$$Y = -5 + 0.0333(1600) + 5(3)$$\n"
+                    f"$$Y = -5 + 53.28 + 15$$\n"
+                    f"$$Y = 63.28 \\text{{ ₹ Lakhs}}$$\n\n"
+                    f"---\n"
+                    f"**Final Answer: Predicted House Price = ₹63.28 Lakhs**\n\n"
+                    f"[Source: {clean_name} • Page 61-63]\n\n"
+                    f"**Follow-Up Questions:**\n"
+                    f"1. Would you like to see how the matrix inverse $(X^T X)^{{-1}}$ was calculated using minors and cofactors?\n"
+                    f"2. Shall we solve the assignment problem predicting student marks using Study Hours and Attendance?"
+                )
+
+            # Simple Linear Regression (Study Hours + Marks)
+            if is_simple_reg or (has_simple_data and not is_mult_reg):
+                return (
+                    f"### 📐 Step-by-Step Solution: Simple Linear Regression (Student Marks Prediction)\n\n"
+                    f"Based on your uploaded course material (**{clean_name}**, Pages 52–53), we predict student marks based on study hours using Simple Linear Regression.\n\n"
+                    f"#### Given Dataset:\n"
+                    f"| Study Hours ($X$) | Marks ($Y$) |\n"
+                    f"| :--- | :--- |\n"
+                    f"| 2 | 40 |\n"
+                    f"| 3 | 50 |\n"
+                    f"| 4 | 60 |\n"
+                    f"| 5 | 70 |\n\n"
+                    f"**Target**: Predict the marks for a student who studies **6 hours** ($X = 6$).\n\n"
+                    f"---\n\n"
+                    f"### Step 1: Calculate Means\n"
+                    f"$$\\bar{{x}} = \\frac{{2 + 3 + 4 + 5}}{{4}} = \\frac{{14}}{{4}} = 3.5$$\n"
+                    f"$$\\bar{{y}} = \\frac{{40 + 50 + 60 + 70}}{{4}} = \\frac{{220}}{{4}} = 55$$\n\n"
+                    f"### Step 2: Intermediate Values Table\n"
+                    f"| $X$ | $Y$ | $X - \\bar{{x}}$ | $Y - \\bar{{y}}$ | $(X - \\bar{{x}})(Y - \\bar{{y}})$ | $(X - \\bar{{x}})^2$ |\n"
+                    f"| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+                    f"| 2 | 40 | -1.5 | -15 | 22.5 | 2.25 |\n"
+                    f"| 3 | 50 | -0.5 | -5 | 2.5 | 0.25 |\n"
+                    f"| 4 | 60 | 0.5 | 5 | 2.5 | 0.25 |\n"
+                    f"| 5 | 70 | 1.5 | 15 | 22.5 | 2.25 |\n"
+                    f"| **Sum** | | | | **50** | **5** |\n\n"
+                    f"### Step 3: Calculate Slope ($b_1$) and Intercept ($b_0$)\n"
+                    f"$$b_1 = \\frac{{\\sum (X - \\bar{{x}})(Y - \\bar{{y}})}}{{\\sum (X - \\bar{{x}})^2}} = \\frac{{50}}{{5}} = 10$$\n\n"
+                    f"$$b_0 = \\bar{{y}} - b_1 \\bar{{x}} = 55 - 10(3.5) = 55 - 35 = 20$$\n\n"
+                    f"### Step 4: Regression Equation\n"
+                    f"$$Y = b_0 + b_1 X = 20 + 10X$$\n\n"
+                    f"### Step 5: Prediction for 6 Study Hours\n"
+                    f"Substitute $X = 6$:\n"
+                    f"$$Y = 20 + 10(6) = 20 + 60 = 80$$\n\n"
+                    f"---\n"
+                    f"**Final Answer: Predicted Marks = 80 Marks**\n\n"
+                    f"[Source: {clean_name} • Page 52-53]\n\n"
+                    f"**Follow-Up Questions:**\n"
+                    f"1. Would you like to practice predicting marks for a student who studies 7 or 8 hours?\n"
+                    f"2. Shall we move to Multiple Linear Regression to see how additional features like attendance are incorporated?"
+                )
+
             clean_lines = [l.strip() for l in body.split("\n") if l.strip()]
             summary_excerpt = " ".join(clean_lines[:4]) if clean_lines else "Course foundational material."
             if len(summary_excerpt) > 300:

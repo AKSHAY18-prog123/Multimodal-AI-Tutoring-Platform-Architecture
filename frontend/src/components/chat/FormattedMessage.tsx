@@ -50,10 +50,15 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     return <div className="whitespace-pre-wrap">{content}</div>;
   }
 
-  // Pre-process: Clean up stray quadruple asterisks **** or empty markers and raw <br> tags
+  // Pre-process: Clean up stray quadruple asterisks, raw br tags, and normalize formulas
   const cleanContent = content
     .replace(/\*{4,}/g, '')
     .replace(/<br\s*\/?>/gi, '\n')
+    // Auto-fix missing parentheses in Normal equation: X^TX^{-1} -> (X^T X)^{-1}
+    .replace(/X\^T\s*X\^\{-1\}/g, '(X^T X)^{-1}')
+    .replace(/X\^TX\^\{-1\}/g, '(X^T X)^{-1}')
+    .replace(/X\^T\s*X\^-1/g, '(X^T X)^{-1}')
+    .replace(/X\^TX\^-1/g, '(X^T X)^{-1}')
     .trim();
 
   // Helper to safely render KaTeX math
@@ -61,7 +66,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     try {
       const html = katex.renderToString(math.trim(), {
         displayMode,
-        throwOnError: false,
+        throwOnError: true,
       });
       return (
         <span
@@ -70,7 +75,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
         />
       );
     } catch {
-      return <code className="font-mono text-xs px-1 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">{math}</code>;
+      return <code className="font-mono text-xs px-1 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded">{math}</code>;
     }
   };
 
@@ -78,11 +83,11 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
   const renderInline = (text: string): React.ReactNode[] => {
     // Regex matches:
     // 1. [Source: ...] citations
-    // 2. $$...$$ display math inline
-    // 3. $...$ inline LaTeX math
+    // 2. $$...$$ or \[...\] display math inline
+    // 3. \(...\) or $...$ inline LaTeX math
     // 4. **bold** or __bold__
     // 5. `code`
-    const regex = /(\[Source:\s*[^\]]+\])|(\$\$[^$]+\$\$)|(\$[^$\n]+\$)|(\*\*[^*]+\*\*)|(__[^_]+__)|(`[^`]+`)/g;
+    const regex = /(\[Source:\s*[^\]]+\])|(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])|(\\\([^\n]+?\\\)|(?<!\\)\$[^\$\n]+?\$)|(\*\*[^*]+\*\*|__[^_]+__)|(`[^`]+`)/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -129,18 +134,20 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
           );
         }
       }
-      // 2. Display Math inline: $$...$$
+      // 2. Display Math: $$...$$ or \[...\]
       else if (match[2]) {
-        const mathExpr = match[2].slice(2, -2);
+        const raw = match[2];
+        const mathExpr = raw.startsWith('$$') ? raw.slice(2, -2) : raw.slice(2, -2);
         parts.push(
           <span key={`math-d-${match.index}`}>
             {renderMath(mathExpr, true)}
           </span>
         );
       }
-      // 3. Inline LaTeX math: $...$
+      // 3. Inline LaTeX math: \(...\) or $...$
       else if (match[3]) {
-        const mathExpr = match[3].slice(1, -1);
+        const raw = match[3];
+        const mathExpr = raw.startsWith('\\(') ? raw.slice(2, -2) : raw.slice(1, -1);
         parts.push(
           <span key={`math-i-${match.index}`}>
             {renderMath(mathExpr, false)}
@@ -148,8 +155,8 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
         );
       }
       // 4. Bold text
-      else if (match[4] || match[5]) {
-        const rawBold = match[4] || match[5];
+      else if (match[4]) {
+        const rawBold = match[4];
         const innerText = rawBold.slice(2, -2).trim();
         parts.push(
           <strong key={`bold-${match.index}`} className="font-semibold text-slate-900 dark:text-white">
@@ -158,8 +165,8 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
         );
       }
       // 5. Code: `code`
-      else if (match[6]) {
-        const codeText = match[6].slice(1, -1);
+      else if (match[5]) {
+        const codeText = match[5].slice(1, -1);
         parts.push(
           <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-xs font-mono bg-slate-200/80 dark:bg-slate-700 text-sky-700 dark:text-sky-300">
             {codeText}
@@ -253,21 +260,26 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
       continue;
     }
 
-    // 1. Multi-line or Standalone Math Block ($$ ... $$)
-    if (line.startsWith('$$')) {
+    // 1. Multi-line or Standalone Math Block ($$ ... $$ or \[ ... \])
+    if (line.startsWith('$$') || line.startsWith('\\[')) {
       flushList();
+      const isBracket = line.startsWith('\\[');
+      const endMarker = isBracket ? '\\]' : '$$';
       let mathContent = '';
-      if (line.endsWith('$$') && line.length > 2) {
+      if (line.endsWith(endMarker) && line.length > 2) {
         mathContent = line.slice(2, -2).trim();
         i++;
       } else {
         const mathLines: string[] = [line.slice(2)];
         i++;
-        while (i < lines.length && !lines[i].trim().endsWith('$$')) {
+        while (i < lines.length && !lines[i].trim().endsWith(endMarker)) {
+          if (lines[i].trim().startsWith('#') || lines[i].trim().startsWith('```')) {
+            break; // Stop if we hit a heading or code block - don't swallow the rest of the text
+          }
           mathLines.push(lines[i]);
           i++;
         }
-        if (i < lines.length) {
+        if (i < lines.length && lines[i].trim().endsWith(endMarker)) {
           const lastLine = lines[i].trim();
           mathLines.push(lastLine.slice(0, -2));
           i++;
@@ -275,14 +287,16 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
         mathContent = mathLines.join('\n').trim();
       }
 
-      blocks.push(
-        <div
-          key={`mathblock-${i}`}
-          className="my-3 py-3 px-4 overflow-x-auto rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200/80 dark:border-slate-800 text-center shadow-xs"
-        >
-          {renderMath(mathContent, true)}
-        </div>
-      );
+      if (mathContent) {
+        blocks.push(
+          <div
+            key={`mathblock-${i}`}
+            className="my-3 py-3 px-4 overflow-x-auto rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200/80 dark:border-slate-800 text-center shadow-xs"
+          >
+            {renderMath(mathContent, true)}
+          </div>
+        );
+      }
       continue;
     }
 

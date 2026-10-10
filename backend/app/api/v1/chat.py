@@ -304,7 +304,8 @@ async def send_chat_message(
         student_profile=learner_ctx.get("behavior"),
         episodic_memories=episodes,
         allow_outside_knowledge=payload.allow_outside_knowledge,
-        chat_history=chat_history
+        chat_history=chat_history,
+        session=session
     )
 
     # 6. Save Assistant Message

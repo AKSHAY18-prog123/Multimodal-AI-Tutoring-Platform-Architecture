@@ -55,6 +55,10 @@ async def process_document_background(document_id: str):
 
             if doc_type == "pdf":
                 pages = pdf_ingestor.extract_pdf(doc_file_path, document_id)
+                doc.metadata_json = {
+                    **(doc.metadata_json or {}),
+                    "page_count": len(pages)
+                }
                 for p in pages:
                     db_page = DocumentPage(
                         document_id=doc.id,
@@ -117,6 +121,10 @@ async def process_document_background(document_id: str):
 
             elif doc_type in ["pptx", "ppt"]:
                 slides = ppt_ingestor.extract_pptx(doc_file_path, document_id)
+                doc.metadata_json = {
+                    **(doc.metadata_json or {}),
+                    "slide_count": len(slides)
+                }
                 for s in slides:
                     db_slide = Slide(
                         document_id=doc.id,
@@ -143,20 +151,28 @@ async def process_document_background(document_id: str):
                 if meta and meta.get("title"):
                     if doc.filename in ["YouTube Video", "Video", "Python (Video)", ""] or "http" in doc.filename:
                         doc.filename = meta["title"]
-                if meta:
-                    doc.metadata_json = {
-                        **(doc.metadata_json or {}),
-                        "title": meta.get("title"),
-                        "thumbnail": meta.get("thumbnail"),
-                        "channel": meta.get("channel"),
-                        "duration": meta.get("duration"),
-                        "duration_formatted": meta.get("duration_formatted")
-                    }
 
                 segments = video_ingestor.ingest_youtube_transcript(doc_file_path)
+                dur_sec = (meta.get("duration") if meta else 0.0) or (segments[-1]["timestamp_end"] if segments else 0.0)
+                from backend.app.ingestion.video_ingestion import format_timestamp
+                dur_fmt = (meta.get("duration_formatted") if meta and meta.get("duration") else None) or format_timestamp(dur_sec)
+                is_fallback = bool(segments and segments[0].get("is_fallback", False))
+
+                doc.metadata_json = {
+                    **(doc.metadata_json or {}),
+                    "title": (meta.get("title") if meta else None) or doc.filename,
+                    "thumbnail": meta.get("thumbnail") if meta else None,
+                    "channel": meta.get("channel") if meta else None,
+                    "duration": dur_sec,
+                    "duration_formatted": dur_fmt,
+                    "segment_count": len(segments),
+                    "is_fallback": is_fallback,
+                    "video_url": doc_file_path
+                }
+
                 vid = Video(
                     document_id=doc.id,
-                    duration_seconds=meta.get("duration") or (segments[-1]["timestamp_end"] if segments else 0.0),
+                    duration_seconds=dur_sec,
                     resolution="1080p"
                 )
                 session.add(vid)
@@ -184,9 +200,20 @@ async def process_document_background(document_id: str):
 
             elif doc_type in ["video", "mp4", "webm", "audio", "mp3"]:
                 segments = video_ingestor.extract_video_segments(doc_file_path, document_id)
+                dur_sec = segments[-1]["timestamp_end"] if segments else 0.0
+                from backend.app.ingestion.video_ingestion import format_timestamp
+                dur_fmt = format_timestamp(dur_sec)
+                is_fallback = bool(segments and segments[0].get("is_fallback", False))
+                doc.metadata_json = {
+                    **(doc.metadata_json or {}),
+                    "duration": dur_sec,
+                    "duration_formatted": dur_fmt,
+                    "segment_count": len(segments),
+                    "is_fallback": is_fallback
+                }
                 vid = Video(
                     document_id=doc.id,
-                    duration_seconds=segments[-1]["timestamp_end"] if segments else 0.0,
+                    duration_seconds=dur_sec,
                     resolution="1080p"
                 )
                 session.add(vid)
