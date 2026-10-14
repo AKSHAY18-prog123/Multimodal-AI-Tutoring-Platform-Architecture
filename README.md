@@ -179,3 +179,7 @@ project-root/
 ├── scripts/ (process_sample_course.py, run_evaluation.py)
 └── docs/ (architecture, api, rag_pipeline, learner_model, memory_architecture, evaluation)
 ```
+
+
+$env:PYTHONPATH = (Get-Location).Path
+>> uv run python -m uvicorn backend.app.main:app --reload
