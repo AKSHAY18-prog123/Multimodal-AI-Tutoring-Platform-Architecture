@@ -37,6 +37,21 @@ def _format_type_label(file_type: str) -> str:
     return ft.upper() or "Document"
 
 
+def extract_module_number(text: str) -> Optional[str]:
+    """Extracts explicit module/chapter/unit number from a string, e.g. 'module 1', 'mod 2', 'chapter 1'."""
+    if not text:
+        return None
+    m = re.search(r"\b(?:module|chapter|unit|part|mod)\s*[-_:#]?\s*(\d+|[ivxlcdm]+)\b", text, re.IGNORECASE)
+    if not m:
+        m2 = re.search(r"(?:^|[\s_\-\.\(\[])m\s*[-_:#]?\s*(\d+)(?:$|[\s_\-\.\)\]])", text, re.IGNORECASE)
+        if not m2:
+            return None
+        return m2.group(1).lower()
+    val = m.group(1).lower()
+    roman_map = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"}
+    return roman_map.get(val, val)
+
+
 def extract_structural_coordinates(query: str) -> Dict[str, Optional[Any]]:
     """Extracts explicit page number, slide number, or timestamp target from a student's query."""
     q_lower = query.lower()
@@ -326,6 +341,80 @@ class SourceResolver:
 
         # Check if the user is asking to compare or combine multiple sources
         is_comparison = any(w in q_lower for w in ["compare both", "compare the two", "both files", "combine both", "across both"])
+
+        # Check if user asks for exhaustive topics across all modules / all topics in the materials
+        query_mod_num = extract_module_number(query)
+        is_all_topics_req = any(p in q_lower for p in [
+            "all topics", "all the topics", "all the top", "all top", "every topic",
+            "all modules", "every module", "complete syllabus", "full syllabus", "master topic list",
+            "topics across all", "topics in all", "topics in the pdf", "topics in pdf",
+            "list all the top", "list all top", "list all the topics", "list all topics"
+        ])
+        course_docs = [d for d in docs if d["in_active_course"]] or docs
+
+        # If user explicitly asks for all topics across the material without naming a single module
+        if not query_mod_num and is_all_topics_req:
+            return {
+                "status": "resolved_all",
+                "document_id": None,
+                "document_ids": [d["id"] for d in course_docs],
+                "course_id": course_id,
+                "source_type": None,
+                "source_file": None,
+                "page_number": None,
+                "slide_number": None,
+                "timestamp_target": None,
+                "is_full_syllabus": True,
+                "clarification_message": None,
+                "suggested_options": [],
+                "effective_query": query
+            }
+
+        # If user explicitly specified a module/chapter number (e.g. "module 1", "module 2")
+        if query_mod_num:
+            mod_matches = [
+                d for d in docs
+                if extract_module_number(d["filename"]) == query_mod_num
+                or extract_module_number(d["norm_name"]) == query_mod_num
+            ]
+            if len(mod_matches) == 1:
+                chosen = mod_matches[0]
+                resolved_stype = "video" if chosen["file_type"] in ("youtube", "video") else chosen["file_type"]
+                return {
+                    "status": "resolved",
+                    "document_id": chosen["id"],
+                    "document_ids": [chosen["id"]],
+                    "course_id": chosen["course_id"] or course_id,
+                    "source_type": resolved_stype,
+                    "source_file": chosen["filename"],
+                    "page_number": coords["page_number"],
+                    "slide_number": coords["slide_number"],
+                    "timestamp_target": coords["timestamp_target"],
+                    "is_full_syllabus": full_syllabus,
+                    "clarification_message": None,
+                    "suggested_options": [],
+                    "effective_query": query
+                }
+            elif len(mod_matches) > 1:
+                narrowed = self._filter_by_user_clues(mod_matches, q_lower, coords)
+                if len(narrowed) == 1:
+                    chosen = narrowed[0]
+                    resolved_stype = "video" if chosen["file_type"] in ("youtube", "video") else chosen["file_type"]
+                    return {
+                        "status": "resolved",
+                        "document_id": chosen["id"],
+                        "document_ids": [chosen["id"]],
+                        "course_id": chosen["course_id"] or course_id,
+                        "source_type": resolved_stype,
+                        "source_file": chosen["filename"],
+                        "page_number": coords["page_number"],
+                        "slide_number": coords["slide_number"],
+                        "timestamp_target": coords["timestamp_target"],
+                        "is_full_syllabus": full_syllabus,
+                        "clarification_message": None,
+                        "suggested_options": [],
+                        "effective_query": query
+                    }
 
         # Match explicit source names mentioned in the query
         q_norm = _normalize_name(query)

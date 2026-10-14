@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 import uuid
 
 from backend.app.database.session import get_db_session
+from backend.app.database.models.user import User
 from backend.app.database.models.assessment import Question, Assessment, AssessmentQuestion, QuestionAttempt
 from backend.app.database.models.knowledge import Concept, Topic
-from backend.app.database.models.learner import LearnerProfile, TopicMastery
+from backend.app.database.models.learner import LearnerProfile, TopicMastery, StudySession
 from backend.app.assessment.question_generator import question_generator
 from backend.app.assessment.question_verifier import question_verifier
 from backend.app.assessment.novelty_checker import novelty_checker
@@ -25,6 +26,7 @@ class GenerateAssessmentRequest(BaseModel):
     user_id: Optional[str] = None
     course_id: Optional[str] = None
     topic_id: Optional[str] = None
+    document_id: Optional[str] = None  # Specific document or YouTube lecture
     custom_prompt: Optional[str] = None  # Specific module, topic, or focus instruction requested by user
     question_type: str = "mcq"  # 'mcq', 'tf', 'mixed'
     difficulty: str = "medium"
@@ -48,11 +50,15 @@ async def generate_assessment(
 ):
     """
     Adaptive Assessment Generator:
-    Connects to course modules/topics or user custom focus prompt, generates verified questions,
+    Connects to course modules/topics, video lectures, or user custom focus prompt, generates verified questions,
     applies learner mastery weights or cold-start baseline, and returns ready assessment.
     """
     # 1. Fetch Learner State & Masteries
-    user_id = payload.user_id or "anonymous-student"
+    user_id = payload.user_id
+    if not user_id:
+        u_res = await session.execute(select(User).limit(1))
+        u_obj = u_res.scalar_one_or_none()
+        user_id = u_obj.id if u_obj else "anonymous-student"
     prof_res = await session.execute(select(LearnerProfile).where(LearnerProfile.user_id == user_id))
     profile = prof_res.scalar_one_or_none()
     is_cold_start = payload.is_diagnostic or (profile and profile.status == "uncalibrated")
@@ -65,9 +71,39 @@ async def generate_assessment(
     )
     concept_masteries = {row[1]: row[0].mastery for row in mast_res.all() if row[1]}
 
-    # 2. Fetch or Generate Candidate Questions
+    # 2. Resolve Document Target and Source Context if specified
+    from backend.app.database.models.document import Document
+    from backend.app.knowledge_base.vector_store import vector_store
+
+    target_doc_id = payload.document_id
+    if not target_doc_id and payload.custom_prompt and "uploaded material:" in payload.custom_prompt:
+        clean_name = payload.custom_prompt.split("uploaded material:")[-1].strip()
+        doc_q = await session.execute(select(Document).where(Document.filename.ilike(f"%{clean_name}%")))
+        found_doc = doc_q.scalars().first()
+        if found_doc:
+            target_doc_id = found_doc.id
+
+    doc_context_map: Dict[str, str] = {}
+    doc_topic_name = None
+    if target_doc_id:
+        doc_res = await session.execute(select(Document).where(Document.id == target_doc_id))
+        doc_obj = doc_res.scalar_one_or_none()
+        if doc_obj:
+            doc_topic_name = doc_obj.filename
+            chunks = vector_store.get_chunks_by_filter(document_id=target_doc_id, limit=30)
+            for c in chunks:
+                t_name = c.get("topic_name") or c.get("metadata", {}).get("topic_name")
+                if t_name and t_name not in ("Lecture Video", "Lecture Segment", "General"):
+                    if t_name not in doc_context_map:
+                        doc_context_map[t_name] = c.get("content", "")
+                    else:
+                        doc_context_map[t_name] += "\n" + c.get("content", "")
+
+    # 3. Determine Assessment Topic Title
     topic_title = "General Assessment"
-    if payload.custom_prompt and payload.custom_prompt.strip():
+    if doc_topic_name:
+        topic_title = doc_topic_name
+    elif payload.custom_prompt and payload.custom_prompt.strip() and not payload.custom_prompt.startswith("Focus strictly on"):
         topic_title = payload.custom_prompt.strip()
     elif payload.topic_id:
         t_res = await session.execute(select(Topic).where(Topic.id == payload.topic_id))
@@ -82,14 +118,16 @@ async def generate_assessment(
 
     # Query existing verified questions in the bank
     q_query = select(Question).where(Question.verification_status == "verified")
-    if payload.custom_prompt:
+    if target_doc_id:
+        q_query = q_query.where(Question.topic_name.ilike(f"%{topic_title}%"))
+    elif payload.custom_prompt and not payload.custom_prompt.startswith("Focus strictly on"):
         q_query = q_query.where(Question.topic_name.ilike(f"%{topic_title}%"))
     elif payload.topic_id:
         q_query = q_query.where(Question.topic_name == topic_title)
     existing_res = await session.execute(q_query)
     existing_questions = existing_res.scalars().all()
 
-    # If question bank has fewer questions than needed or user gave custom prompt, generate new questions
+    # If question bank has fewer questions than needed or user gave specific document/prompt, generate new questions
     needed_count = max(payload.question_count, 6)
     candidate_pool = [
         {
@@ -105,15 +143,18 @@ async def generate_assessment(
             "novelty_hash": q.novelty_hash
         }
         for q in existing_questions
-    ] if not payload.custom_prompt else []
+    ] if not (target_doc_id or (payload.custom_prompt and not payload.custom_prompt.startswith("Focus strictly on"))) else []
 
     if len(candidate_pool) < needed_count:
-        if payload.custom_prompt:
+        if doc_context_map:
+            discovered_concepts = list(doc_context_map.keys())
+        elif payload.custom_prompt and not payload.custom_prompt.startswith("Focus strictly on"):
+            clean_focus = payload.custom_prompt.strip()
             discovered_concepts = [
-                payload.custom_prompt,
-                f"{payload.custom_prompt} Fundamentals",
-                f"{payload.custom_prompt} Analysis & Methods",
-                f"{payload.custom_prompt} Practical Problem Solving"
+                clean_focus,
+                f"{clean_focus} Core Mechanisms",
+                f"{clean_focus} Analysis & Practical Methods",
+                f"{clean_focus} Problem Solving & Applications"
             ]
         else:
             # Fetch concepts dynamically from DB for this course or topic
@@ -127,7 +168,6 @@ async def generate_assessment(
             discovered_concepts = [r[0] for r in c_res.all()]
 
             if not discovered_concepts:
-                # Fallback to subject-neutral concept facets derived from topic title
                 discovered_concepts = [
                     f"{topic_title} Fundamentals",
                     f"{topic_title} Mechanisms & Operations",
@@ -138,10 +178,16 @@ async def generate_assessment(
         for c_name in discovered_concepts:
             if len(candidate_pool) >= needed_count:
                 break
+
+            source_ctx = doc_context_map.get(c_name, "")
+            if not source_ctx and doc_context_map:
+                source_ctx = "\n".join(list(doc_context_map.values())[:3])
+
             raw_q = await question_generator.generate_question(
                 concept=c_name,
                 topic=topic_title,
-                difficulty=payload.difficulty
+                difficulty=payload.difficulty,
+                source_context=source_ctx
             )
             # Verify Question
             is_valid, msg, v_details = question_verifier.verify(raw_q)
@@ -293,7 +339,11 @@ async def submit_assessment(
     if not assessment:
         raise EntityNotFoundError("Assessment", assessment_id)
 
-    user_id = payload.user_id or assessment.user_id or "anonymous-student"
+    user_id = payload.user_id or assessment.user_id
+    if not user_id:
+        u_res = await session.execute(select(User).limit(1))
+        u_obj = u_res.scalar_one_or_none()
+        user_id = u_obj.id if u_obj else "anonymous-student"
 
     # 1. Fetch questions to grade
     answers_map = {ans.question_id: ans for ans in payload.answers}
@@ -409,6 +459,21 @@ async def submit_assessment(
         profile.status = "active"
         profile.total_assessments_completed += 1
         profile.total_questions_answered += len(attempts_records)
+        quiz_mins = round(total_time_taken / 60.0, 2)
+        if quiz_mins > 0:
+            profile.total_active_study_minutes = round((profile.total_active_study_minutes or 0.0) + quiz_mins, 2)
+            now_utc = datetime.now(timezone.utc)
+            quiz_session = StudySession(
+                user_id=user_id,
+                course_id=assessment.course_id,
+                session_start=now_utc,
+                session_end=now_utc,
+                active_study_seconds=total_time_taken,
+                reading_seconds=0.0,
+                answering_seconds=total_time_taken,
+                concepts_covered=list(mastery_after.keys())
+            )
+            session.add(quiz_session)
         # Recalculate overall average mastery
         all_vals = list(mastery_after.values())
         if all_vals:

@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
@@ -23,12 +23,14 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./storage/db/tutor.db"
     CHROMA_PERSIST_DIRECTORY: str = "./storage/db/chroma"
+    CHROMA_COLLECTION_NAME: Optional[str] = None
 
-    # AI Providers: 'gemini', 'ollama', 'mock'
-    LLM_PROVIDER: str = "gemini"
-    VISION_PROVIDER: str = "gemini"
-    EMBEDDING_PROVIDER: str = "local"
-    RERANKER_PROVIDER: str = "local"
+    # AI Providers: 'ollama', 'gemini', 'mock'
+    LLM_PROVIDER: str = "ollama"
+    VISION_PROVIDER: str = "ollama"
+    EMBEDDING_PROVIDER: str = "ollama"
+    RERANKER_PROVIDER: str = "gte-modernbert"
+    RERANKER_MODEL: str = "Alibaba-NLP/gte-reranker-modernbert-base"
 
     # Google Gemini
     GEMINI_API_KEY: str = ""
@@ -41,8 +43,9 @@ class Settings(BaseSettings):
 
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2"
-    OLLAMA_VISION_MODEL: str = "llama3.2-vision"
+    OLLAMA_MODEL: str = "qwen2.5:7b"
+    OLLAMA_VISION_MODEL: str = "qwen3-vl:4b"
+    OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
 
     # Storage Dirs
     STORAGE_DIR: str = "./storage"

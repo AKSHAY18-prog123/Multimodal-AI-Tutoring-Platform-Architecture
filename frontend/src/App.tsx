@@ -5,13 +5,18 @@ import { Tutor } from './pages/Tutor/Tutor';
 import { Assessments } from './pages/Assessments/Assessments';
 import { Courses } from './pages/Courses/Courses';
 import { LearnerProfile } from './pages/LearnerProfile/LearnerProfile';
+import { Analytics } from './pages/Analytics/Analytics';
 import { OnboardingModal } from './components/onboarding/OnboardingModal';
 import { CreateCourseModal } from './components/courses/CreateCourseModal';
 import { api, getActiveUserId, getActiveUserName, setActiveUser } from './services/api';
+import { useStudyTimeTracker } from './hooks/useStudyTimeTracker';
 
 export function App() {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [assessmentConfig, setAssessmentConfig] = useState<{ is_diagnostic?: boolean; course_id?: string }>({});
+  
+  // Track active time spent on the platform across all tabs and activities
+  useStudyTimeTracker(currentTab);
   
   // Student identification state
   const [currentUser, setCurrentUser] = useState<{ id: string; name: string } | null>(null);
@@ -108,6 +113,7 @@ export function App() {
           />
         )}
         {currentTab === 'profile' && <LearnerProfile />}
+        {currentTab === 'analytics' && <Analytics />}
       </main>
 
       {/* First-Time User Onboarding Modal */}

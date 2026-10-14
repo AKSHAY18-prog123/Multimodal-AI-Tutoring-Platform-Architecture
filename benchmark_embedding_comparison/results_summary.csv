@@ -1,0 +1,33 @@
+Query ID,Category,Query Text,MiniLM Recall@5,MiniLM MRR@10,MiniLM Latency (ms),Nomic Recall@5,Nomic MRR@10,Nomic Latency (ms),Winner Recall@5
+Q01_CONCEPT,concept_specific,What built-in method replaces occurrences of a substring in a Python string?,1.0,1.0,21.2,1.0,1.0,2106.1,Tie
+Q02_CONCEPT,concept_specific,How does backpropagation update weights in a multilayer perceptron?,0.5,1.0,9.3,1.0,1.0,2105.1,Nomic
+Q03_CONCEPT,concept_specific,What is the XOR problem and why can't a single-layer perceptron solve it?,0.5,1.0,10.4,1.0,1.0,2317.0,Nomic
+Q04_CONCEPT,concept_specific,What are augmented assignment operators in Python and how do you increment a variable?,1.0,1.0,7.8,1.0,1.0,2044.4,Tie
+Q05_CONCEPT,concept_specific,How do Python tuples differ from lists in terms of mutability and brackets?,1.0,1.0,10.9,1.0,1.0,2115.7,Tie
+Q06_CONCEPT,concept_specific,What does the range() function do in Python and how is it used in loops?,1.0,1.0,11.3,1.0,1.0,2236.5,Tie
+Q07_CONCEPT,concept_specific,How does the greedy choice strategy work in the Knapsack problem?,1.0,0.5,8.6,0.5,0.3333333333333333,2057.3,MiniLM
+Q08_CONFUSED,easily_confused,What is the difference between single slash division and double slash integer division in Python?,1.0,1.0,10.6,1.0,1.0,2102.9,Tie
+Q09_CONFUSED,easily_confused,What is the difference between append and insert list methods in Python?,1.0,1.0,10.3,1.0,1.0,2086.9,Tie
+Q10_CONFUSED,easily_confused,How does bias error compare to variance error in deep learning models?,0.5,0.2,7.0,0.5,0.25,2172.8,Tie
+Q11_CONFUSED,easily_confused,"In the Knapsack problem, how does sorting by maximum profit compare to sorting by profit-to-weight ratio?",1.0,0.5,10.9,0.5,1.0,2217.4,MiniLM
+Q12_CONFUSED,easily_confused,What is the difference between comparison operator equal equal and assignment operator in Python?,0.5,0.25,10.1,0.5,0.3333333333333333,2173.2,Tie
+Q13_CONFUSED,easily_confused,What is the distinction between L1 regularization and L2 weight decay in neural networks?,0.0,0.125,7.2,0.0,0.16666666666666666,2194.0,Tie
+Q14_CONFUSED,easily_confused,How does a while loop with a condition counter differ from a for loop iterating over a range?,0.0,0.14285714285714285,10.8,0.0,0.16666666666666666,2189.3,Tie
+Q15_FORMULA,formula_definition,What is the mathematical definition and formula for Cosine Similarity between two vectors?,1.0,1.0,9.7,1.0,1.0,2095.8,Tie
+Q16_FORMULA,formula_definition,What is the mathematical formulation of Profit and Weight ratio in the Knapsack problem?,1.0,1.0,7.1,0.5,1.0,2081.7,MiniLM
+Q17_FORMULA,formula_definition,What is the mathematical formula for the Chain Rule of calculus in deep learning derivatives?,0.0,0.125,7.3,0.5,0.2,2216.7,Nomic
+Q18_FORMULA,formula_definition,What is the mathematical definition and activation rule of a single Perceptron unit?,0.0,0.0,12.8,0.0,0.0,2066.7,Tie
+Q19_FORMULA,formula_definition,What is the rule of operator precedence in Python arithmetic operations?,1.0,1.0,10.1,1.0,1.0,2090.8,Tie
+Q20_FORMULA,formula_definition,What is the definition of a Tensor in Linear Algebra for deep learning?,0.0,0.0,9.6,0.0,0.0,2241.4,Tie
+Q21_TIMESTAMP,lecture_section_timestamp,What does the teacher discuss at timestamp 00:30 regarding what you can do with Python?,0.0,0.0,7.9,1.0,0.5,2062.3,Nomic
+Q22_TIMESTAMP,lecture_section_timestamp,What happens around 01:14 where the instructor explains downloading Python from python.org?,1.0,1.0,8.2,1.0,1.0,2104.6,Tie
+Q23_TIMESTAMP,lecture_section_timestamp,What does the instructor demonstrate around 05:16 regarding the hello world program in the terminal?,1.0,1.0,8.1,0.5,1.0,2104.2,MiniLM
+Q24_TIMESTAMP,lecture_section_timestamp,What is explained around 24:43 to 25:14 regarding the exponent operator 10 to power of three?,1.0,0.3333333333333333,10.6,1.0,1.0,2324.6,Tie
+Q25_TIMESTAMP,lecture_section_timestamp,"What profit and weight values (25, 24, 15 and 18, 15) are introduced at 00:50 in the Knapsack video?",1.0,0.2,7.8,1.0,0.5,2074.7,Tie
+Q26_TIMESTAMP,lecture_section_timestamp,Where in the Knapsack lecture at 01:50 to 02:43 is sorting by profit versus weight first analyzed?,1.0,0.5,10.9,0.0,0.1111111111111111,2105.9,MiniLM
+Q27_ABSENT,absent_out_of_domain,How does Shor's quantum algorithm factor prime numbers in polynomial time using quantum Fourier transform?,0.0,0.0,12.5,0.0,0.0,2091.8,N/A (OOD)
+Q28_ABSENT,absent_out_of_domain,How do Docker container layers interact with Kubernetes cgroups and containerd runtime?,0.0,0.0,9.0,0.0,0.0,2151.1,N/A (OOD)
+Q29_ABSENT,absent_out_of_domain,What are React functional components and how does the useEffect hook handle clean up on unmount?,0.0,0.0,10.4,0.0,0.0,2189.7,N/A (OOD)
+Q30_ABSENT,absent_out_of_domain,"How does the Transformer multi-head self-attention projection matrix compute Queries, Keys, and Values?",0.0,0.0,10.1,0.0,0.0,2215.2,N/A (OOD)
+Q31_ABSENT,absent_out_of_domain,What is the difference between SQL pessimistic locking and optimistic locking with MVCC timestamps?,0.0,0.0,10.5,0.0,0.0,2189.2,N/A (OOD)
+Q32_ABSENT,absent_out_of_domain,How do you configure a Redis cluster with Sentinel master-slave replication and quorum elections?,0.0,0.0,10.2,0.0,0.0,2200.3,N/A (OOD)

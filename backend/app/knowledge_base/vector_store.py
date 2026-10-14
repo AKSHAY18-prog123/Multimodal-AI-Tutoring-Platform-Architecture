@@ -18,12 +18,45 @@ class VectorStoreManager:
             path=self.persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False)
         )
-        self.collection_name = "course_knowledge_chunks"
+        # Determine collection name based on configuration or provider to prevent mixing vector dimensions
+        provider_name = (settings.EMBEDDING_PROVIDER or "local").lower()
+        if settings.CHROMA_COLLECTION_NAME:
+            self.collection_name = settings.CHROMA_COLLECTION_NAME
+        elif provider_name in ["ollama", "nomic", "ollama_nomic"]:
+            self.collection_name = "course_knowledge_chunks_nomic"
+        else:
+            self.collection_name = "course_knowledge_chunks"
+
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
             metadata={"description": "Multimodal course knowledge chunks with strict source anchors"}
         )
         self.embedding_provider = get_embedding_provider()
+        self._verify_collection_compatibility()
+
+    def _verify_collection_compatibility(self):
+        """Verify that existing collection embedding dimensions match the configured provider."""
+        try:
+            count = self.collection.count()
+            if count > 0:
+                peek = self.collection.peek(limit=1)
+                embeddings = peek.get("embeddings")
+                if embeddings is not None and len(embeddings) > 0 and len(embeddings[0]) > 0:
+                    existing_dim = len(embeddings[0])
+                    expected_dim = getattr(self.embedding_provider, "dimension", 384)
+                    if existing_dim != expected_dim:
+                        logger.error(
+                            f"CRITICAL EMBEDDING DIMENSION MISMATCH: ChromaDB collection '{self.collection_name}' "
+                            f"has {existing_dim} dimensions, but embedding provider expects {expected_dim} dimensions! "
+                            f"Never silently mix embeddings."
+                        )
+                    else:
+                        logger.info(
+                            f"ChromaDB collection '{self.collection_name}' verified: "
+                            f"{count} records, {existing_dim} dimensions matching {self.embedding_provider.__class__.__name__}."
+                        )
+        except Exception as e:
+            logger.warning(f"Could not verify collection dimensions: {e}")
 
     async def add_chunks(self, chunks: List[Dict[str, Any]]):
         """

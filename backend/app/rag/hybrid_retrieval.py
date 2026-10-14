@@ -20,6 +20,7 @@ class HybridRetrievalService:
         document_id: Optional[Any] = None,
         page_number: Optional[int] = None,
         slide_number: Optional[int] = None,
+        target_timestamp_seconds: Optional[float] = None,
         top_k: int = 8,
         include_neighbors: bool = False
     ) -> List[Dict[str, Any]]:
@@ -28,10 +29,18 @@ class HybridRetrievalService:
         1. Dense vector search (ChromaDB)
         2. Lexical BM25/keyword scan over scoped chunks so exact terminology, page/slide,
            or video timestamp matches are never missed by dense top-K
-        3. Hybrid reranking (vector + BM25 + FlashRank)
-        4. Exact intra-segment timestamp refinement for video chunks
-        5. Optional neighboring chunk expansion for topic continuity
+        3. Exact timestamp interval boosting for video queries
+        4. Hybrid reranking (vector + BM25 + FlashRank)
+        5. Exact intra-segment timestamp refinement for video chunks
+        6. Optional neighboring chunk expansion for topic continuity
         """
+        # Parse timestamp target from query if not explicitly passed
+        if target_timestamp_seconds is None:
+            ts_m = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", query)
+            if ts_m:
+                from backend.app.ingestion.video_ingestion import parse_timestamp_to_seconds
+                target_timestamp_seconds = parse_timestamp_to_seconds(ts_m.group(1))
+
         # 1. Dense Vector Search (pull larger pool for reranking)
         dense_candidates = await vector_store.search(
             query=query,
@@ -63,6 +72,19 @@ class HybridRetrievalService:
             cid = sc["id"]
             if cid in merged_by_id:
                 continue
+            c_meta = sc.get("metadata", {})
+            stype = c_meta.get("source_type") or sc.get("source_type")
+
+            # Timestamp target boost: include video chunks that encompass the target timestamp!
+            if target_timestamp_seconds is not None and stype == "video":
+                t_start = float(c_meta.get("timestamp_start") or sc.get("timestamp_start") or 0.0)
+                t_end = float(c_meta.get("timestamp_end") or sc.get("timestamp_end") or t_start)
+                if (t_start - 10.0) <= target_timestamp_seconds <= (t_end + 10.0):
+                    sc["vector_score"] = 0.95
+                    sc["rerank_score"] = 0.98
+                    merged_by_id[cid] = sc
+                    continue
+
             c_lower = sc.get("content", "").lower()
             # Include scoped chunk if it matches any content term or if page/slide filter was explicitly requested
             if (page_number is not None or slide_number is not None) or any(t in c_lower for t in content_terms):
@@ -74,6 +96,23 @@ class HybridRetrievalService:
         if not raw_candidates:
             logger.info(f"No raw candidates returned from vector store for query: {query}")
             return []
+
+        # If a specific timestamp is requested, prioritize video chunks covering that time
+        if target_timestamp_seconds is not None:
+            ts_matching = []
+            other_chunks = []
+            for c in raw_candidates:
+                c_meta = c.get("metadata", {})
+                stype = c_meta.get("source_type") or c.get("source_type")
+                if stype == "video":
+                    t_start = float(c_meta.get("timestamp_start") or c.get("timestamp_start") or 0.0)
+                    t_end = float(c_meta.get("timestamp_end") or c.get("timestamp_end") or t_start)
+                    if (t_start - 10.0) <= target_timestamp_seconds <= (t_end + 10.0):
+                        ts_matching.append(c)
+                        continue
+                other_chunks.append(c)
+            if ts_matching:
+                raw_candidates = ts_matching + other_chunks
 
         # Demote video_curriculum_map on specific topic/timestamp queries so real transcript segments rank first
         q_lower = query.lower()

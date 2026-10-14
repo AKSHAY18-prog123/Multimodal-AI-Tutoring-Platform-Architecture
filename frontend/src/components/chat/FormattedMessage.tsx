@@ -79,15 +79,16 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     }
   };
 
-  // Helper to render inline elements (citations, math, bold, code)
+  // Helper to render inline elements (citations, math, bold, italic, code)
   const renderInline = (text: string): React.ReactNode[] => {
     // Regex matches:
     // 1. [Source: ...] citations
     // 2. $$...$$ or \[...\] display math inline
     // 3. \(...\) or $...$ inline LaTeX math
     // 4. **bold** or __bold__
-    // 5. `code`
-    const regex = /(\[Source:\s*[^\]]+\])|(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])|(\\\([^\n]+?\\\)|(?<!\\)\$[^\$\n]+?\$)|(\*\*[^*]+\*\*|__[^_]+__)|(`[^`]+`)/g;
+    // 5. *italic* or _italic_
+    // 6. `code`
+    const regex = /(\[Source:\s*[^\]]+\])|(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\])|(\\\([^\n]+?\\\)|(?<!\\)\$[^\$\n]+?\$)|(\*\*[^*]+\*\*|__[^_]+__)|(\*(?:[^*]+)\*|_(?:[^_]+)_)|(`[^`]+`)/g;
     const parts: React.ReactNode[] = [];
     let lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -115,7 +116,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
                 e.stopPropagation();
                 onCitationClick(matchedCitation);
               }}
-              className="inline-flex items-center gap-1 mx-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-100/80 dark:bg-sky-950/70 border border-sky-300 dark:border-sky-800 text-sky-800 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900 transition-colors cursor-pointer align-baseline"
+              className="inline-flex items-center gap-1 mx-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-100/80 dark:bg-sky-950/70 border border-sky-300 dark:border-sky-800 text-sky-800 dark:text-sky-300 hover:bg-sky-200 dark:hover:bg-sky-900 transition-colors cursor-pointer align-baseline shadow-2xs"
               title="Click to view exact source in material"
             >
               <FileText className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
@@ -164,9 +165,19 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
           </strong>
         );
       }
-      // 5. Code: `code`
+      // 5. Italic / Concept emphasis
       else if (match[5]) {
-        const codeText = match[5].slice(1, -1);
+        const rawItalic = match[5];
+        const innerText = rawItalic.slice(1, -1).trim();
+        parts.push(
+          <span key={`italic-${match.index}`} className="font-medium text-slate-800 dark:text-slate-200 italic">
+            {innerText}
+          </span>
+        );
+      }
+      // 6. Code: `code`
+      else if (match[6]) {
+        const codeText = match[6].slice(1, -1);
         parts.push(
           <code key={`code-${match.index}`} className="px-1.5 py-0.5 rounded text-xs font-mono bg-slate-200/80 dark:bg-slate-700 text-sky-700 dark:text-sky-300">
             {codeText}
@@ -184,39 +195,72 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     return parts;
   };
 
+  interface ListItem {
+    text: string;
+    level: number;
+  }
+
   // Split lines into structured blocks
   const lines = cleanContent.split('\n');
   const blocks: React.ReactNode[] = [];
-  let currentList: { type: 'ul' | 'ol'; items: string[] } | null = null;
+  let currentList: { type: 'ul' | 'ol'; items: ListItem[] } | null = null;
 
   const flushList = () => {
     if (!currentList) return;
     if (currentList.type === 'ul') {
       blocks.push(
-        <ul key={`ul-${blocks.length}`} className="my-2.5 space-y-2 pl-1">
-          {currentList.items.map((item, idx) => (
-            <li key={idx} className="flex items-start gap-2 text-slate-800 dark:text-slate-200">
-              <span className="w-1.5 h-1.5 rounded-full bg-sky-500 dark:bg-sky-400 mt-2 shrink-0" />
-              <div className="flex-1 leading-relaxed">
-                {renderInline(item)}
-              </div>
-            </li>
-          ))}
+        <ul key={`ul-${blocks.length}`} className="my-2.5 space-y-1.5 pl-1">
+          {currentList.items.map((item, idx) => {
+            if (item.level === 0) {
+              // Level 0: Main Topic or Top-Level item
+              return (
+                <li key={idx} className="flex items-start gap-2.5 text-slate-900 dark:text-slate-100 font-medium pt-1.5 pb-0.5">
+                  <span className="w-2 h-2 rounded-full bg-sky-500 dark:bg-sky-400 mt-2 shrink-0 shadow-xs shadow-sky-500/50" />
+                  <div className="flex-1 leading-relaxed text-sm">
+                    {renderInline(item.text)}
+                  </div>
+                </li>
+              );
+            } else if (item.level === 1) {
+              // Level 1: Subtopic (indented with left guide border & distinct sub-bullet)
+              return (
+                <li key={idx} className="flex items-start gap-2 ml-4 pl-3.5 border-l-2 border-sky-500/25 dark:border-sky-500/35 py-0.5 text-slate-700 dark:text-slate-300">
+                  <span className="w-1.5 h-1.5 rounded-full border border-sky-400/80 bg-sky-100 dark:bg-sky-950 mt-2 shrink-0" />
+                  <div className="flex-1 leading-relaxed text-[13px]">
+                    {renderInline(item.text)}
+                  </div>
+                </li>
+              );
+            } else {
+              // Level 2+: Nested Subtopic / detail
+              return (
+                <li key={idx} className="flex items-start gap-2 ml-8 pl-3 border-l border-slate-300 dark:border-slate-700 py-0.5 text-slate-600 dark:text-slate-400">
+                  <span className="w-1 h-1 rounded-full bg-slate-400 dark:bg-slate-500 mt-2 shrink-0" />
+                  <div className="flex-1 leading-relaxed text-xs">
+                    {renderInline(item.text)}
+                  </div>
+                </li>
+              );
+            }
+          })}
         </ul>
       );
     } else {
       blocks.push(
-        <ol key={`ol-${blocks.length}`} className="my-2.5 space-y-2 pl-1">
-          {currentList.items.map((item, idx) => (
-            <li key={idx} className="flex items-start gap-2.5 text-slate-800 dark:text-slate-200">
-              <span className="flex items-center justify-center w-5 h-5 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 text-xs font-semibold shrink-0 mt-0.5">
-                {idx + 1}
-              </span>
-              <div className="flex-1 leading-relaxed">
-                {renderInline(item)}
-              </div>
-            </li>
-          ))}
+        <ol key={`ol-${blocks.length}`} className="my-2.5 space-y-1.5 pl-1">
+          {currentList.items.map((item, idx) => {
+            const indentClass = item.level === 1 ? "ml-5 pl-2.5 border-l border-slate-300 dark:border-slate-700" : (item.level >= 2 ? "ml-9 pl-2" : "");
+            return (
+              <li key={idx} className={`flex items-start gap-2.5 text-slate-800 dark:text-slate-200 ${indentClass}`}>
+                <span className="flex items-center justify-center w-5 h-5 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 text-xs font-semibold shrink-0 mt-0.5">
+                  {idx + 1}
+                </span>
+                <div className="flex-1 leading-relaxed">
+                  {renderInline(item.text)}
+                </div>
+              </li>
+            );
+          })}
         </ol>
       );
     }
@@ -225,7 +269,8 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
 
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i].trim();
+    const rawLine = lines[i];
+    const line = rawLine.trim();
 
     if (!line) {
       flushList();
@@ -391,7 +436,7 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     }
 
     // 4. Headers (### Heading, ## Heading, # Heading)
-    const headerMatch = line.match(/^(#{1,4})\s+(.+)$/);
+    const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
     if (headerMatch) {
       flushList();
       const level = headerMatch[1].length;
@@ -400,7 +445,9 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
         ? "text-base font-bold text-slate-900 dark:text-white mt-4 mb-2 border-b border-slate-200 dark:border-slate-700 pb-1"
         : level === 2
         ? "text-sm font-bold text-slate-900 dark:text-white mt-3.5 mb-1.5"
-        : "text-xs font-bold text-sky-600 dark:text-sky-400 uppercase tracking-wider mt-3 mb-1";
+        : level === 3
+        ? "text-sm font-bold text-sky-600 dark:text-sky-400 tracking-wide mt-3.5 mb-1 flex items-center gap-1.5"
+        : "text-xs font-semibold text-slate-800 dark:text-slate-200 uppercase tracking-wider mt-2.5 mb-1";
       blocks.push(
         <div key={`h-${i}`} className={headerClasses}>
           {renderInline(text)}
@@ -411,25 +458,29 @@ export const FormattedMessage: React.FC<FormattedMessageProps> = ({
     }
 
     // 5. Bullet list item: * text, - text, • text
-    const bulletMatch = line.match(/^[\*\-•]\s+(.+)$/);
+    const bulletMatch = rawLine.match(/^(\s*)(?:[\*\-•])\s+(.+)$/);
     if (bulletMatch) {
       if (!currentList || currentList.type !== 'ul') {
         flushList();
         currentList = { type: 'ul', items: [] };
       }
-      currentList.items.push(bulletMatch[1]);
+      const rawIndent = bulletMatch[1].replace(/\t/g, '  ').length;
+      const level = rawIndent >= 4 ? 2 : (rawIndent >= 2 ? 1 : 0);
+      currentList.items.push({ text: bulletMatch[2], level });
       i++;
       continue;
     }
 
     // 6. Numbered list item: 1. text, 2) text
-    const numMatch = line.match(/^\d+[\.\)]\s+(.+)$/);
+    const numMatch = rawLine.match(/^(\s*)(?:\d+[\.\)])\s+(.+)$/);
     if (numMatch) {
       if (!currentList || currentList.type !== 'ol') {
         flushList();
         currentList = { type: 'ol', items: [] };
       }
-      currentList.items.push(numMatch[1]);
+      const rawIndent = numMatch[1].replace(/\t/g, '  ').length;
+      const level = rawIndent >= 4 ? 2 : (rawIndent >= 2 ? 1 : 0);
+      currentList.items.push({ text: numMatch[2], level });
       i++;
       continue;
     }

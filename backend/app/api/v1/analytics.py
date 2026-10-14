@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from typing import Dict, Any, Optional, List
 
 from backend.app.database.session import get_db_session
@@ -48,8 +48,20 @@ async def get_analytics_progress(
 
     # Study time breakdown
     active_mins = profile.total_active_study_minutes if profile else 0.0
-    reading_mins = round(active_mins * 0.6, 1)
-    answering_mins = round(active_mins * 0.4, 1)
+
+    # Aggregate real reading and answering seconds from StudySession
+    s_res = await session.execute(
+        select(
+            func.sum(StudySession.reading_seconds),
+            func.sum(StudySession.answering_seconds)
+        ).where(StudySession.user_id == user_id)
+    )
+    tot_read_sec, tot_ans_sec = s_res.first() or (0.0, 0.0)
+    reading_mins = round((tot_read_sec or 0.0) / 60.0, 1)
+    answering_mins = round((tot_ans_sec or 0.0) / 60.0, 1)
+    if (reading_mins + answering_mins) == 0 and active_mins > 0:
+        reading_mins = round(active_mins * 0.6, 1)
+        answering_mins = round(active_mins * 0.4, 1)
     overall_mast = int((profile.overall_mastery if profile else 0.0) * 100)
 
     # Mastery over time trajectory from real student assessments

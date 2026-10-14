@@ -239,6 +239,45 @@ async def process_document_background(document_id: str):
                 v_chunks = chunker.chunk_video_segments(segments, doc.id, filename, course_id)
                 raw_chunks.extend(v_chunks)
 
+            elif doc_type in ["png", "jpg", "jpeg", "image"]:
+                doc.status = "vision_analysis"
+                doc.processing_progress = 50
+                await session.commit()
+                vision_result = await visual_understander.analyze_visual(
+                    doc_file_path,
+                    context_hint=filename
+                )
+                raw_entities = vision_result.get("entities", [])
+                entities_list = raw_entities if isinstance(raw_entities, list) else [str(raw_entities)]
+                raw_rel = vision_result.get("relationships", [])
+                rel_list = raw_rel if isinstance(raw_rel, list) else [str(raw_rel)]
+
+                v_elem = VisualElement(
+                    document_id=doc.id,
+                    visual_type=vision_result.get("visual_type", "diagram"),
+                    image_path=doc_file_path,
+                    page_number=1,
+                    caption=vision_result.get("title", filename),
+                    description=vision_result.get("description", ""),
+                    concept=vision_result.get("concept", filename),
+                    entities=entities_list,
+                    relationships=rel_list,
+                    vision_understanding_json=vision_result
+                )
+                session.add(v_elem)
+                if vision_result.get("description"):
+                    extracted_text_corpus.append(vision_result["description"])
+
+                if not vision_result.get("is_mock", True):
+                    v_chunk = chunker.chunk_visual_element(
+                        visual_info=vision_result,
+                        document_id=doc.id,
+                        source_file=filename,
+                        course_id=course_id,
+                        page_number=1
+                    )
+                    raw_chunks.append(v_chunk)
+
             # Stage 4: Indexing in Vector Store & Relational DB (85%)
             doc.status = "indexing"
             doc.processing_progress = 85
@@ -274,45 +313,97 @@ async def process_document_background(document_id: str):
             doc.processing_progress = 95
             await session.commit()
 
-            combined_text = "\n\n".join(extracted_text_corpus[:10])
-            if combined_text:
-                taxonomy = await topic_extractor.extract_course_taxonomy(combined_text)
-                concept_id_map = {}
+            # Stage 5: Knowledge Graph & Concept Taxonomy (95%)
+            doc.status = "knowledge_graph"
+            doc.processing_progress = 95
+            await session.commit()
 
-                for top_idx, t_data in enumerate(taxonomy.get("topics", [])):
+            # For YouTube videos with structured chapters, create topics directly from chapters!
+            video_chapters = (doc.metadata_json or {}).get("chapters") if doc_type == "youtube" else None
+            concept_id_map = {}
+
+            if video_chapters and len(video_chapters) > 1:
+                logger.info(f"[Worker] Building taxonomy directly from {len(video_chapters)} lecture chapters for {filename}")
+                for top_idx, ch in enumerate(video_chapters):
+                    ch_title = ch.get("title", f"Topic {top_idx + 1}").strip()
                     topic = Topic(
                         course_id=course_id,
-                        title=t_data["title"],
-                        description=t_data.get("description"),
+                        title=ch_title,
+                        description=f"Chapter {top_idx + 1} from {filename} ({format_timestamp(ch.get('start_time', 0))} - {format_timestamp(ch.get('end_time', 0))})",
                         order_index=top_idx
                     )
                     session.add(topic)
                     await session.flush()
 
-                    for c_idx, c_data in enumerate(t_data.get("concepts", [])):
+                    # Find concepts from matching chunks for this chapter
+                    ch_chunks = [c for c in raw_chunks if c.get("topic_name") == ch_title]
+                    ch_concepts = set()
+                    for c in ch_chunks:
+                        for kc in c.get("metadata", {}).get("key_concepts", []):
+                            if kc and kc.lower() not in (ch_title.lower(), "lecture concept", "video segment"):
+                                ch_concepts.add(kc)
+
+                    if not ch_concepts:
+                        ch_concepts = {f"{ch_title} Core Concepts"}
+
+                    for c_idx, c_name in enumerate(list(ch_concepts)[:4]):
                         concept = Concept(
                             topic_id=topic.id,
-                            name=c_data["name"],
-                            subtopic=c_data.get("subtopic"),
-                            definition=c_data.get("definition"),
-                            difficulty_level=c_data.get("difficulty", "medium"),
+                            name=c_name,
+                            subtopic=ch_title,
+                            definition=f"Key concept covered in {ch_title}",
+                            difficulty_level="medium",
                             order_index=c_idx
                         )
                         session.add(concept)
                         await session.flush()
-                        concept_id_map[c_data["name"].lower()] = concept.id
+                        concept_id_map[c_name.lower()] = concept.id
+            else:
+                # Sample evenly across the entire corpus (beginning, middle, end)
+                if len(extracted_text_corpus) > 10:
+                    step = max(1, len(extracted_text_corpus) // 10)
+                    sampled_corpus = [extracted_text_corpus[i] for i in range(0, len(extracted_text_corpus), step)][:12]
+                else:
+                    sampled_corpus = extracted_text_corpus[:10]
 
-                for rel in taxonomy.get("relationships", []):
-                    src_name = rel.get("source_concept", "").lower()
-                    dst_name = rel.get("target_concept", "").lower()
-                    if src_name in concept_id_map and dst_name in concept_id_map:
-                        crel = ConceptRelationship(
-                            source_concept_id=concept_id_map[src_name],
-                            target_concept_id=concept_id_map[dst_name],
-                            relationship_type=rel.get("relationship_type", "prerequisite"),
-                            strength=rel.get("strength", 1.0)
+                combined_text = "\n\n".join(sampled_corpus)
+                if combined_text:
+                    taxonomy = await topic_extractor.extract_course_taxonomy(combined_text)
+
+                    for top_idx, t_data in enumerate(taxonomy.get("topics", [])):
+                        topic = Topic(
+                            course_id=course_id,
+                            title=t_data["title"],
+                            description=t_data.get("description"),
+                            order_index=top_idx
                         )
-                        session.add(crel)
+                        session.add(topic)
+                        await session.flush()
+
+                        for c_idx, c_data in enumerate(t_data.get("concepts", [])):
+                            concept = Concept(
+                                topic_id=topic.id,
+                                name=c_data["name"],
+                                subtopic=c_data.get("subtopic"),
+                                definition=c_data.get("definition"),
+                                difficulty_level=c_data.get("difficulty", "medium"),
+                                order_index=c_idx
+                            )
+                            session.add(concept)
+                            await session.flush()
+                            concept_id_map[c_data["name"].lower()] = concept.id
+
+                    for rel in taxonomy.get("relationships", []):
+                        src_name = rel.get("source_concept", "").lower()
+                        dst_name = rel.get("target_concept", "").lower()
+                        if src_name in concept_id_map and dst_name in concept_id_map:
+                            crel = ConceptRelationship(
+                                source_concept_id=concept_id_map[src_name],
+                                target_concept_id=concept_id_map[dst_name],
+                                relationship_type=rel.get("relationship_type", "prerequisite"),
+                                strength=rel.get("strength", 1.0)
+                            )
+                            session.add(crel)
 
             # Stage 6: Completed (100%)
             doc.status = "completed"

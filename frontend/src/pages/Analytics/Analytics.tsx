@@ -28,6 +28,32 @@ export const Analytics: React.FC = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    const handleTimeUpdated = (event: any) => {
+      const data = event.detail;
+      if (data && typeof data.total_active_study_minutes === 'number') {
+        setAnalytics((prev: any) => prev ? {
+          ...prev,
+          total_study_minutes: data.total_active_study_minutes,
+          reading_minutes: data.reading_minutes,
+          answering_minutes: data.answering_minutes
+        } : prev);
+      }
+    };
+    window.addEventListener('study-time-updated', handleTimeUpdated);
+    return () => window.removeEventListener('study-time-updated', handleTimeUpdated);
+  }, []);
+
+  const formatStudyTime = (mins?: number) => {
+    if (!mins || mins <= 0) return '0';
+    if (mins < 1) return '< 1';
+    return Math.round(mins).toString();
+  };
+
+  const totalTracked = (analytics?.reading_minutes || 0) + (analytics?.answering_minutes || 0);
+  const readingPct = totalTracked > 0 ? Math.round(((analytics?.reading_minutes || 0) / totalTracked) * 100) : 60;
+  const answeringPct = 100 - readingPct;
+
   return (
     <div className="space-y-8 animate-fade-in pb-12">
       <div>
@@ -60,7 +86,7 @@ export const Analytics: React.FC = () => {
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
           <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase">Active Study Time</span>
           <div className="text-3xl font-extrabold text-slate-900 dark:text-white mt-2">
-            {analytics?.total_study_minutes || 0} mins
+            {formatStudyTime(analytics?.total_study_minutes)} mins
           </div>
           <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Total engaged platform sessions</p>
         </div>
@@ -118,20 +144,24 @@ export const Analytics: React.FC = () => {
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-2">
               <div className="flex justify-between font-semibold">
                 <span className="text-slate-600 dark:text-slate-400">Material Reading & Tutor Explanation:</span>
-                <span className="text-slate-900 dark:text-white">{analytics?.reading_minutes || 0} mins (60%)</span>
+                <span className="text-slate-900 dark:text-white">
+                  {formatStudyTime(analytics?.reading_minutes)} mins ({readingPct}%)
+                </span>
               </div>
               <div className="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2">
-                <div className="bg-blue-500 h-2 rounded-full w-[60%]" />
+                <div className="bg-blue-500 h-2 rounded-full transition-all duration-500" style={{ width: `${readingPct}%` }} />
               </div>
             </div>
 
             <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800 space-y-2">
               <div className="flex justify-between font-semibold">
                 <span className="text-slate-600 dark:text-slate-400">Problem Solving & Quiz Answering:</span>
-                <span className="text-slate-900 dark:text-white">{analytics?.answering_minutes || 0} mins (40%)</span>
+                <span className="text-slate-900 dark:text-white">
+                  {formatStudyTime(analytics?.answering_minutes)} mins ({answeringPct}%)
+                </span>
               </div>
               <div className="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2">
-                <div className="bg-emerald-500 h-2 rounded-full w-[40%]" />
+                <div className="bg-emerald-500 h-2 rounded-full transition-all duration-500" style={{ width: `${answeringPct}%` }} />
               </div>
             </div>
 

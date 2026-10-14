@@ -46,8 +46,32 @@ class BaseReranker:
     """Hybrid BM25 + semantic vector + cross-encoder score combiner and reranker for candidate passages."""
 
     def __init__(self):
+        self._gte_ranker = None
+        self._gte_checked = False
         self._flashrank_ranker = None
         self._flashrank_checked = False
+
+    def _get_gte_modernbert(self):
+        if self._gte_checked:
+            return self._gte_ranker
+        self._gte_checked = True
+        try:
+            from backend.app.core.config import settings
+            provider = getattr(settings, "RERANKER_PROVIDER", "gte-modernbert").lower()
+            if provider in ["flashrank", "tinybert"]:
+                return None
+
+            from sentence_transformers import CrossEncoder
+            model_name = getattr(settings, "RERANKER_MODEL", "Alibaba-NLP/gte-reranker-modernbert-base")
+            try:
+                self._gte_ranker = CrossEncoder(model_name, max_length=512, local_files_only=True)
+            except Exception:
+                self._gte_ranker = CrossEncoder(model_name, max_length=512)
+            logger.info(f"Loaded GTE-ModernBERT CrossEncoder successfully (model={model_name})")
+        except Exception as e:
+            logger.warning(f"GTE-ModernBERT could not be initialized: {e}. Falling back to FlashRank.")
+            self._gte_ranker = None
+        return self._gte_ranker
 
     def _get_flashrank(self):
         if self._flashrank_checked:
@@ -55,13 +79,15 @@ class BaseReranker:
         self._flashrank_checked = True
         try:
             import os
-            from pathlib import Path
-            # Only load FlashRank if its local cache already exists to avoid blocking network downloads
-            cache_dir = Path(os.environ.get("FLASHRANK_CACHE_DIR", Path.home() / ".cache" / "flashrank"))
-            if cache_dir.exists() and any(cache_dir.iterdir()):
-                from flashrank import Ranker
-                self._flashrank_ranker = Ranker(cache_dir=str(cache_dir))
-        except Exception:
+            from flashrank import Ranker
+            cache_dir = os.environ.get("FLASHRANK_CACHE_DIR")
+            if cache_dir:
+                self._flashrank_ranker = Ranker(cache_dir=cache_dir)
+            else:
+                self._flashrank_ranker = Ranker()
+            logger.info(f"Loaded FlashRank ranker successfully (model_dir={getattr(self._flashrank_ranker, 'model_dir', 'default')})")
+        except Exception as e:
+            logger.warning(f"FlashRank could not be initialized: {e}. Falling back to lexical+vector ranking.")
             self._flashrank_ranker = None
         return self._flashrank_ranker
 
@@ -141,18 +167,30 @@ class BaseReranker:
 
         max_bm25 = max(raw_bm25_scores) if raw_bm25_scores else 0.0
 
-        # Optional FlashRank scores if available
-        flashrank_scores: Dict[int, float] = {}
-        ranker = self._get_flashrank()
-        if ranker is not None:
+        # Neural cross-encoder scoring (GTE-Reranker-ModernBERT primary, FlashRank fallback)
+        cross_encoder_scores: Dict[int, float] = {}
+        gte_ranker = self._get_gte_modernbert()
+        if gte_ranker is not None:
             try:
-                from flashrank import RerankRequest
-                passages = [{"id": i, "text": c.get("content", "")[:1500]} for i, c in enumerate(candidates)]
-                fr_res = ranker.rerank(RerankRequest(query=query, passages=passages))
-                for item in fr_res:
-                    flashrank_scores[int(item["id"])] = float(item.get("score", 0.0))
-            except Exception:
-                flashrank_scores = {}
+                pairs = [(query, c.get("content", "")[:1000]) for c in candidates]
+                scores = gte_ranker.predict(pairs, batch_size=16)
+                for i, s in enumerate(scores):
+                    cross_encoder_scores[i] = float(s)
+            except Exception as e:
+                logger.warning(f"GTE-ModernBERT inference error: {e}. Falling back to FlashRank.")
+                cross_encoder_scores = {}
+
+        if not cross_encoder_scores:
+            ranker = self._get_flashrank()
+            if ranker is not None:
+                try:
+                    from flashrank import RerankRequest
+                    passages = [{"id": i, "text": c.get("content", "")[:1500]} for i, c in enumerate(candidates)]
+                    fr_res = ranker.rerank(RerankRequest(query=query, passages=passages))
+                    for item in fr_res:
+                        cross_encoder_scores[int(item["id"])] = float(item.get("score", 0.0))
+                except Exception:
+                    cross_encoder_scores = {}
 
         scored_candidates = []
         for idx, cand in enumerate(candidates):
@@ -252,14 +290,16 @@ class BaseReranker:
                 elif is_cand_multiple:
                     intent_adjustment -= 0.25
 
-            if idx in flashrank_scores:
-                fr_score = flashrank_scores[idx]
-                combined_score = (0.40 * vector_score) + (0.35 * lexical_score) + (0.25 * fr_score) + phrase_bonus + intent_adjustment
+            if idx in cross_encoder_scores:
+                neural_score = cross_encoder_scores[idx]
+                combined_score = (0.35 * vector_score) + (0.30 * lexical_score) + (0.35 * neural_score) + phrase_bonus + intent_adjustment
             else:
                 combined_score = (0.50 * vector_score) + (0.40 * lexical_score) + phrase_bonus + intent_adjustment
 
             cand_copy = dict(cand)
             cand_copy["rerank_score"] = round(max(0.0, min(1.0, combined_score)), 4)
+            cand_copy["cross_encoder_score"] = round(float(cross_encoder_scores.get(idx, 0.0)), 4)
+            cand_copy["flashrank_score"] = round(float(cross_encoder_scores.get(idx, 0.0)), 4)
             cand_copy["lexical_score"] = round(lexical_score, 4)
             cand_copy["content_term_coverage"] = round(coverage, 4)
             cand_copy["bm25_score"] = round(raw_bm25_scores[idx], 4)

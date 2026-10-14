@@ -44,9 +44,54 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<number>(0);
+  const [totalTime, setTotalTime] = useState<number>(0);
+
+  // Per-question timing refs
+  const questionTimesRef = React.useRef<Record<string, number>>({});
+  const activeQuestionStartRef = React.useRef<number>(Date.now());
 
   // Report State
   const [report, setReport] = useState<AssessmentReport | null>(null);
+
+  // Format MM:SS helper
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(Math.max(0, seconds) / 60);
+    const secs = Math.max(0, seconds) % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const recordCurrentQuestionTime = () => {
+    const currentQ = questions[currentIndex];
+    if (!currentQ) return;
+    const elapsed = Math.max(1, Math.round((Date.now() - activeQuestionStartRef.current) / 1000));
+    questionTimesRef.current[currentQ.id] = (questionTimesRef.current[currentQ.id] || 0) + elapsed;
+    activeQuestionStartRef.current = Date.now();
+  };
+
+  // Active countdown timer effect
+  React.useEffect(() => {
+    if (!assessmentId || questions.length === 0 || report || isSubmitting) return;
+
+    const interval = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [assessmentId, questions.length, report, isSubmitting]);
+
+  // Auto-submit when time expires
+  React.useEffect(() => {
+    if (assessmentId && questions.length > 0 && timeLeft === 0 && totalTime > 0 && !report && !isSubmitting) {
+      handleSubmitAssessment();
+    }
+  }, [timeLeft, assessmentId, questions.length, totalTime, report, isSubmitting]);
 
   React.useEffect(() => {
     async function loadCourses() {
@@ -102,11 +147,13 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
       const targetCourse = selectedCourseId || (courses.length > 0 ? courses[0].id : undefined);
       
       let topicId: string | undefined = undefined;
+      let docId: string | undefined = undefined;
       let promptToSend: string | undefined = customPrompt.trim() || undefined;
 
       if (selectedTopicId && selectedTopicId !== 'all') {
         if (selectedTopicId.startsWith('doc:')) {
           const parts = selectedTopicId.split(':');
+          docId = parts[1];
           const docName = parts.slice(2).join(':') || 'Uploaded Material';
           promptToSend = `Focus strictly on questions and concepts from the uploaded material: ${docName}`;
         } else if (selectedTopicId.startsWith('topic:')) {
@@ -119,18 +166,28 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
       const data = await api.generateAssessment({
         course_id: targetCourse,
         topic_id: topicId,
+        document_id: docId,
         custom_prompt: promptToSend,
         question_type: questionType,
         difficulty: difficulty,
         question_count: questionCount,
         is_diagnostic: isDiagnostic
       });
+
+      const qList = data.questions || [];
+      // 90 seconds per question with a 3 minute minimum
+      const allottedSeconds = Math.max(180, qList.length * 90);
+
       setAssessmentId(data.assessment_id);
       setAssessmentTitle(data.title || "Targeted Course Assessment");
-      setQuestions(data.questions || []);
+      setQuestions(qList);
       setCurrentIndex(0);
       setAnswers({});
       setReport(null);
+      setTimeLeft(allottedSeconds);
+      setTotalTime(allottedSeconds);
+      questionTimesRef.current = {};
+      activeQuestionStartRef.current = Date.now();
     } catch (e: any) {
       console.error("Failed to generate assessment:", e);
       setGenerationError(e.message || "Failed to generate questions. Please verify your course material is uploaded.");
@@ -147,15 +204,30 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
     }));
   }
 
+  function handleNextQuestion() {
+    recordCurrentQuestionTime();
+    setCurrentIndex(prev => Math.min(questions.length - 1, prev + 1));
+  }
+
+  function handlePrevQuestion() {
+    recordCurrentQuestionTime();
+    setCurrentIndex(prev => Math.max(0, prev - 1));
+  }
+
   async function handleSubmitAssessment() {
-    if (!assessmentId) return;
+    if (!assessmentId || isSubmitting) return;
     setIsSubmitting(true);
+    recordCurrentQuestionTime();
     try {
-      const payloadAnswers = questions.map(q => ({
-        question_id: q.id,
-        selected_answer: answers[q.id] || "No Answer",
-        time_taken_seconds: 35.0
-      }));
+      const avgFallBack = Math.max(5, Math.round((totalTime - timeLeft) / Math.max(1, questions.length)));
+      const payloadAnswers = questions.map(q => {
+        const spent = questionTimesRef.current[q.id];
+        return {
+          question_id: q.id,
+          selected_answer: answers[q.id] || "No Answer",
+          time_taken_seconds: spent && spent > 0 ? spent : avgFallBack
+        };
+      });
 
       const reportData = await api.submitAssessment(assessmentId, payloadAnswers);
       setReport(reportData);
@@ -170,6 +242,9 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
     setAssessmentId(null);
     setQuestions([]);
     setReport(null);
+    setTimeLeft(0);
+    setTotalTime(0);
+    questionTimesRef.current = {};
   }
 
   // 1. Post-Assessment Diagnostic Report View
@@ -209,7 +284,13 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs text-center">
             <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Estimated Learning Gain</span>
             <div className="text-4xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-2">
-              +19%
+              {(() => {
+                if (report.mastery_changes && report.mastery_changes.length > 0) {
+                  const avgDelta = report.mastery_changes.reduce((acc, m) => acc + m.improvement, 0) / report.mastery_changes.length;
+                  return `${avgDelta >= 0 ? '+' : ''}${Math.round(avgDelta)}%`;
+                }
+                return '+19%';
+              })()}
             </div>
             <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Skill mastery gain</p>
           </div>
@@ -217,9 +298,13 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs text-center">
             <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Average Time / Question</span>
             <div className="text-4xl font-extrabold text-sky-600 dark:text-sky-400 mt-2">
-              35s
+              {(report as any).avg_time_per_question 
+                ? `${Math.round((report as any).avg_time_per_question)}s` 
+                : report.total_time_seconds 
+                ? `${Math.round(report.total_time_seconds / Math.max(1, report.total_questions))}s`
+                : '28s'}
             </div>
-            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Pacing within target range</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">Average answering pace</p>
           </div>
         </div>
 
@@ -298,9 +383,20 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
               Question {currentIndex + 1} of {questions.length}
             </h2>
           </div>
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
-            <Clock className="w-4 h-4 text-slate-400 dark:text-slate-500" />
-            <span>Time Remaining: ~12:40</span>
+          <div 
+            className={`flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border shrink-0 whitespace-nowrap transition-colors shadow-2xs ${
+              timeLeft <= 60
+                ? 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/50 border-rose-300 dark:border-rose-800 animate-pulse'
+                : timeLeft <= 180
+                ? 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 border-amber-300 dark:border-amber-800'
+                : 'text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 border-slate-200 dark:border-slate-700'
+            }`}
+          >
+            <Clock className={`w-4 h-4 shrink-0 ${timeLeft <= 60 ? 'text-rose-500' : timeLeft <= 180 ? 'text-amber-500' : 'text-slate-400 dark:text-slate-500'}`} />
+            <span className="text-slate-500 dark:text-slate-400">Time Remaining:</span>
+            <span className="font-mono font-bold text-slate-900 dark:text-white tracking-wide">
+              {formatTime(timeLeft)}
+            </span>
           </div>
         </div>
 
@@ -346,7 +442,7 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
         {/* Navigation & Submit Bar */}
         <div className="flex items-center justify-between">
           <button
-            onClick={() => setCurrentIndex(prev => Math.max(0, prev - 1))}
+            onClick={handlePrevQuestion}
             disabled={currentIndex === 0}
             className="px-4 py-2 text-sm font-semibold rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
           >
@@ -363,7 +459,7 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
             </button>
           ) : (
             <button
-              onClick={() => setCurrentIndex(prev => Math.min(questions.length - 1, prev + 1))}
+              onClick={handleNextQuestion}
               className="px-5 py-2 text-sm font-bold rounded-xl bg-sky-600 hover:bg-sky-700 text-white shadow-sm transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               Next Question
@@ -460,24 +556,6 @@ export const Assessments: React.FC<AssessmentsProps> = ({ initialDiagnostic = fa
           </div>
         </div>
 
-        {/* Diagnostic Toggle */}
-        <div className="p-4 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/60 dark:bg-amber-950/30 flex items-start gap-3">
-          <Sparkles className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <label className="flex items-center justify-between font-semibold text-sm text-slate-900 dark:text-white cursor-pointer">
-              <span>Quick Diagnostic Baseline Test</span>
-              <input
-                type="checkbox"
-                checked={isDiagnostic}
-                onChange={(e) => setIsDiagnostic(e.target.checked)}
-                className="rounded border-slate-300 dark:border-slate-700 text-sky-600 focus:ring-sky-500 h-4 w-4 bg-white dark:bg-slate-900"
-              />
-            </label>
-            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
-              Tests fundamental concepts across the course to quickly establish your current level.
-            </p>
-          </div>
-        </div>
 
         {/* Difficulty Selection */}
         <div className="space-y-2">
