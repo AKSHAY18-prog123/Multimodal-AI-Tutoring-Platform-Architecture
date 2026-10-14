@@ -40,13 +40,64 @@ async def ingest_youtube_video(
     if not video_id:
         raise HTTPException(status_code=400, detail="Invalid YouTube URL. Please provide a valid YouTube video link.")
 
+    clean_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Deduplication check: check if this video already exists in the course
+    existing_res = await session.execute(
+        select(Document).where(
+            Document.course_id == payload.course_id,
+            (Document.file_path == payload.url) | (Document.file_path == clean_url) | (Document.file_path.ilike(f"%{video_id}%"))
+        )
+    )
+    existing_doc = existing_res.scalars().first()
+
+    if existing_doc:
+        if existing_doc.status == "completed":
+            return format_success_response({
+                "job_id": existing_doc.id,
+                "document_id": existing_doc.id,
+                "filename": existing_doc.filename,
+                "file_type": existing_doc.file_type,
+                "source_category": existing_doc.source_category,
+                "status": existing_doc.status,
+                "progress": existing_doc.processing_progress,
+                "message": "YouTube lecture is already indexed and ready in this course."
+            })
+        elif existing_doc.status in ("uploaded", "extracting", "chunking", "indexing", "knowledge_graph"):
+            return format_success_response({
+                "job_id": existing_doc.id,
+                "document_id": existing_doc.id,
+                "filename": existing_doc.filename,
+                "file_type": existing_doc.file_type,
+                "source_category": existing_doc.source_category,
+                "status": existing_doc.status,
+                "progress": existing_doc.processing_progress,
+                "message": "YouTube lecture is currently being processed."
+            })
+        else:
+            # Re-try failed document
+            existing_doc.status = "uploaded"
+            existing_doc.processing_progress = 5
+            await session.commit()
+            background_tasks.add_task(process_document_background, existing_doc.id)
+            return format_success_response({
+                "job_id": existing_doc.id,
+                "document_id": existing_doc.id,
+                "filename": existing_doc.filename,
+                "file_type": existing_doc.file_type,
+                "source_category": existing_doc.source_category,
+                "status": existing_doc.status,
+                "progress": existing_doc.processing_progress,
+                "message": "Retrying YouTube lecture indexing."
+            })
+
     clean_title = (payload.title or f"YouTube Lecture ({video_id})").strip()
     display_name = f"{clean_title} (Video)" if not clean_title.endswith("(Video)") else clean_title
 
     doc = Document(
         course_id=payload.course_id,
         filename=display_name,
-        file_path=payload.url,
+        file_path=clean_url,
         file_type="youtube",
         source_category=payload.source_category,
         file_size_bytes=0,

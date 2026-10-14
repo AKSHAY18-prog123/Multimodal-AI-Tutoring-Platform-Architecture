@@ -67,19 +67,43 @@ class QuestionGenerator:
         except Exception as e:
             logger.error(f"Question generation failed: {e}")
 
-        # Fallback question
+        # Fallback question grounded in source context if available
+        clean_context = re.sub(r"\[\d{2}:\d{2}(?::\d{2})?\]", "", source_context).strip()
+        context_preview = ""
+        if clean_context:
+            sentences = [s.strip() for s in re.split(r"[.!?]", clean_context) if len(s.strip().split()) >= 4]
+            if sentences:
+                context_preview = sentences[0]
+
+        if context_preview:
+            return {
+                "question": f"Based on the lecture on {topic}, how is {concept} explained?",
+                "question_type": "mcq",
+                "difficulty": difficulty,
+                "options": [
+                    {"id": "A", "text": f"{context_preview}."},
+                    {"id": "B", "text": f"It is introduced as an alternative that replaces {topic} completely."},
+                    {"id": "C", "text": f"It is mentioned solely as a historical footnote with no current application."},
+                    {"id": "D", "text": f"It is presented as an error condition to be avoided."}
+                ],
+                "correct_answer": "A",
+                "explanation": f"According to the lecture: \"{context_preview}.\"",
+                "topic": topic,
+                "concept": concept
+            }
+
         return {
-            "question": f"In {topic}, what is the primary role of {concept}?",
+            "question": f"In the study of {topic}, what is the key function of {concept}?",
             "question_type": "mcq",
             "difficulty": difficulty,
             "options": [
-                {"id": "A", "text": f"It establishes the foundational mechanism and governance rules for {concept}."},
-                {"id": "B", "text": f"It acts as an auxiliary metric with no direct causal influence on {topic}."},
-                {"id": "C", "text": f"It inverts the standard input-output relationship defined in {topic}."},
-                {"id": "D", "text": f"It functions as an unconstrained randomized variable across states."}
+                {"id": "A", "text": f"It defines the core operation and principles governing {concept} in {topic}."},
+                {"id": "B", "text": f"It serves only as a temporary placeholder without computational significance."},
+                {"id": "C", "text": f"It reverses the fundamental logic of {topic}."},
+                {"id": "D", "text": f"It is an obsolete concept superseded by unrelated techniques."}
             ],
             "correct_answer": "A",
-            "explanation": f"{concept} establishes foundational principles to ensure systematic stability and correctness in {topic}.",
+            "explanation": f"{concept} plays a central role in {topic} by defining the foundational logic and practical behavior.",
             "topic": topic,
             "concept": concept
         }

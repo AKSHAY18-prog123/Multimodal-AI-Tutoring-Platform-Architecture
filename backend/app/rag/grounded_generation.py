@@ -2,11 +2,12 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from backend.app.ai.llm.provider import get_llm_provider
 from backend.app.ai.reranker.base import extract_content_terms
-from backend.app.rag.query_understanding import query_analyzer, classify_conversational_intent
+from backend.app.rag.query_understanding import query_analyzer, classify_conversational_intent, is_exhaustive_topic_query
 from backend.app.rag.hybrid_retrieval import hybrid_retriever
 from backend.app.rag.source_resolver import source_resolver
 from backend.app.rag.context_builder import context_builder
 from backend.app.rag.citation_validator import citation_validator
+from backend.app.knowledge_base.topic_extraction import topic_extractor
 from backend.app.core.logging import logger
 
 SYSTEM_PROMPT = r"""
@@ -38,6 +39,11 @@ $$\\begin{bmatrix} 1 & 2 \\\\ 3 & 4 \\end{bmatrix}$$ or structured markdown tabl
 11. GEOMETRY, SHAPES & DRAWINGS: When explaining geometric shapes, spatial concepts, or coordinate transformations, break them down step-by-step with clear dimensions, vertices, and visual Mermaid diagrams or coordinate grids.
 12. VIDEO LECTURE & TIMESTAMP AWARENESS: When explaining video lectures or timestamped materials, identify the exact timestamp or timestamp range where the instructor discusses the topic (e.g. "From 02:35 to 04:40, the instructor explains..."), include the direct video link when provided in the source header, and cite exact timestamps: `[Source: Video • 02:35-04:40]`.
 13. HONEST BOUNDARIES: If the provided materials do not contain sufficient information to answer the course question, clearly state: "This topic is not covered in the uploaded course material." Do not hallucinate course facts or fabricate timestamps.
+14. HIERARCHICAL TOPIC & SUBTOPIC FORMATTING: Whenever listing, summarizing, or explaining course syllabus, modules, or concepts, always format them in a strict, clean hierarchy:
+- Present each primary Module as a clear header or section.
+- Present each primary Topic clearly (e.g. `- **Topic: Topic Name** [Source: ...]`).
+- Present all related Subtopics neatly indented directly below their parent topic (e.g. `  - **Subtopic Name** [Source: ...]`).
+- Never mix topics and subtopics into a flat unindented list or wrap concept names in loose asterisks.
 """
 
 
@@ -223,10 +229,11 @@ def evaluate_evidence_sufficiency(
 
     confidence = round((0.45 * max_rerank) + (0.35 * max_coverage) + (0.20 * max_vector), 4)
 
-    # If the user asked a specific conceptual question with content terms and NONE of those terms
-    # (or their stems) appear in the retrieved chunks, vector similarity alone is NOT proof of support!
-    if content_terms and max_coverage == 0.0 and not is_followup_or_affirmation:
-        return {"status": "insufficient", "confidence": min(confidence, 0.30), "term_coverage": 0.0}
+    # If the user asked a specific conceptual question with content terms and none or very few
+    # (less than 34%) appear in the retrieved chunks, vector similarity alone is NOT proof of support!
+    if content_terms and not is_followup_or_affirmation:
+        if max_coverage == 0.0 or (len(content_terms) >= 2 and max_coverage < 0.34):
+            return {"status": "insufficient", "confidence": min(confidence, 0.30), "term_coverage": max_coverage}
 
     if is_followup_or_affirmation and chunks:
         return {"status": "supported", "confidence": max(confidence, 0.75), "term_coverage": max(max_coverage, 0.5)}
@@ -234,7 +241,7 @@ def evaluate_evidence_sufficiency(
     if confidence >= 0.45 and max_coverage >= 0.34:
         return {"status": "supported", "confidence": confidence, "term_coverage": max_coverage}
 
-    if confidence >= 0.32 and max_coverage > 0.0:
+    if confidence >= 0.32 and max_coverage >= 0.34:
         return {"status": "inferable", "confidence": confidence, "term_coverage": max_coverage}
 
     return {"status": "insufficient", "confidence": confidence, "term_coverage": max_coverage}
@@ -370,7 +377,29 @@ class GroundedGenerationService:
         target_source_type = resolution.get("source_type")
         target_page = resolution.get("page_number")
         target_slide = resolution.get("slide_number")
+        target_ts_str = resolution.get("timestamp_target")
+        target_ts_sec: Optional[float] = None
+        if target_ts_str:
+            from backend.app.ingestion.video_ingestion import parse_timestamp_to_seconds
+            target_ts_sec = parse_timestamp_to_seconds(target_ts_str)
         is_full_syllabus = bool(resolution.get("is_full_syllabus", False))
+
+        # Step 1.5: Dedicated Exhaustive Topic Extraction (Separated from standard top-k RAG)
+        if (conv_intent and conv_intent.get("intent") == "exhaustive_topic_extraction") or is_exhaustive_topic_query(effective_query):
+            target_doc_ids = None
+            if resolution.get("status") == "resolved" and resolution.get("document_id"):
+                target_doc_ids = [resolution["document_id"]]
+            elif isinstance(target_doc_id, list) and resolution.get("status") != "resolved_all":
+                target_doc_ids = target_doc_id
+            elif target_doc_id and resolution.get("status") != "resolved_all":
+                target_doc_ids = [target_doc_id] if isinstance(target_doc_id, str) else target_doc_id
+
+            return await topic_extractor.extract_exhaustive_topics_for_course(
+                query=effective_query,
+                course_id=target_course_id,
+                session=session,
+                target_doc_ids=target_doc_ids
+            )
 
         # Step 2: Contextualize Follow-up & Analyze Query
         retrieval_query, is_affirmation, is_contextual_followup = contextualize_dialogue_query(
@@ -422,6 +451,7 @@ class GroundedGenerationService:
                 document_id=target_doc_id,
                 page_number=target_page,
                 slide_number=target_slide,
+                target_timestamp_seconds=target_ts_sec,
                 top_k=5,
                 include_neighbors=True
             )
@@ -582,7 +612,7 @@ class GroundedGenerationService:
                 "and prediction for 6 hours = 80 marks. Cite [Source: Module-1_DL.pdf • Page 52-53].]"
             )
 
-        generation_prompt = f"""
+        generation_prompt = fr"""
 {SYSTEM_PROMPT}
 Course Subject: {course_subject}
 {learner_hint}
@@ -619,7 +649,20 @@ Guidelines:
         raw_response = await self.llm.generate(generation_prompt, temperature=0.2, max_tokens=3072)
 
         # If the LLM itself determined the retrieved chunks do not cover the requested question
-        if "this topic is not covered in the uploaded course material" in raw_response.lower():
+        uncovered_phrases = [
+            "this topic is not covered in the uploaded course material",
+            "this topic is not covered",
+            "not covered in the uploaded",
+            "not covered in this lecture",
+            "not mentioned in the uploaded",
+            "not mentioned in this lecture",
+            "not discussed in the uploaded",
+            "not discussed in this lecture",
+            "does not discuss",
+            "does not mention",
+            "no mention of"
+        ]
+        if any(p in raw_response.lower() for p in uncovered_phrases):
             if explicit_outside:
                 return await self._generate_outside_knowledge_answer(
                     pending_question=effective_query,

@@ -11,7 +11,7 @@ from google.genai import types
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.ai.vision.base import BaseVisionProvider
-from backend.app.ai.llm.provider import clean_json_text
+from backend.app.ai.llm.provider import clean_json_text, extract_json_from_mixed_text
 
 VISION_EXTRACTION_PROMPT = """
 You are an expert educational diagram and figure analyst.
@@ -82,11 +82,41 @@ class GeminiVisionProvider(BaseVisionProvider):
             }
 
 class OllamaVisionProvider(BaseVisionProvider):
-    """Local Ollama Vision provider (e.g., llama3.2-vision)."""
+    """Local Ollama Vision provider using qwen3-vl:4b for visual understanding."""
 
     def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
         self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
-        self.model = model or settings.OLLAMA_VISION_MODEL or "llama3.2-vision"
+        self.model = model or settings.OLLAMA_VISION_MODEL or "qwen3-vl:4b"
+
+    async def verify_availability(self) -> Dict[str, Any]:
+        """Verify that Ollama service is reachable and vision model is installed."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.base_url}/api/tags")
+                if resp.status_code == 200:
+                    models = [m.get("name", "") for m in resp.json().get("models", [])]
+                    has_model = any(
+                        self.model == m or self.model == m.split(":")[0] or m.startswith(f"{self.model}:")
+                        for m in models
+                    )
+                    return {
+                        "available": has_model,
+                        "server_online": True,
+                        "model": self.model,
+                        "installed_models": models,
+                        "message": "Vision model is available in Ollama." if has_model else f"Vision model '{self.model}' not found in Ollama installed models: {models}"
+                    }
+                return {
+                    "available": False,
+                    "server_online": False,
+                    "error": f"Ollama server returned HTTP {resp.status_code}"
+                }
+        except Exception as e:
+            return {
+                "available": False,
+                "server_online": False,
+                "error": f"Ollama connection error at {self.base_url}: {e}"
+            }
 
     async def analyze_image(
         self,
@@ -100,8 +130,57 @@ class OllamaVisionProvider(BaseVisionProvider):
         with open(path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        prompt = context_prompt or VISION_EXTRACTION_PROMPT
-        payload = {
+        if context_prompt and "schema" not in context_prompt.lower():
+            prompt = f"{VISION_EXTRACTION_PROMPT}\nAdditional context / instruction: {context_prompt}"
+        else:
+            prompt = context_prompt or VISION_EXTRACTION_PROMPT
+
+        def _normalize_vision_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+            if not isinstance(d, dict):
+                return {}
+            title = d.get("title") or d.get("concept") or d.get("visual_type") or d.get("topic") or "Educational Visual"
+            description = d.get("description") or d.get("explanation") or d.get("summary") or d.get("text") or str(d)
+            vtype = d.get("visual_type") or "diagram"
+            concept = d.get("concept") or title
+            d["title"] = title
+            d["description"] = description
+            d["visual_type"] = vtype
+            d["concept"] = concept
+            d["is_mock"] = False
+            return d
+
+        timeout_cfg = httpx.Timeout(180.0, connect=15.0)
+
+        # 1. Primary: Use Ollama /api/chat with base64 image (supports qwen3-vl thinking tokens cleanly)
+        chat_payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [img_b64]
+                }
+            ],
+            "format": "json",
+            "stream": False,
+            "options": {"temperature": 0.1}
+        }
+        try:
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                resp = await client.post(f"{self.base_url}/api/chat", json=chat_payload)
+                resp.raise_for_status()
+                data = resp.json()
+                msg = data.get("message", {})
+                content = (msg.get("content") or "").strip()
+                thinking = (msg.get("thinking") or "").strip()
+                res = extract_json_from_mixed_text(content) or extract_json_from_mixed_text(thinking)
+                if res and isinstance(res, dict):
+                    return _normalize_vision_dict(res)
+        except Exception as e_chat:
+            logger.info(f"Ollama Vision /api/chat failed ({e_chat}), trying /api/generate fallback...")
+
+        # 2. Secondary: Fallback to /api/generate
+        generate_payload = {
             "model": self.model,
             "prompt": prompt,
             "images": [img_b64],
@@ -110,18 +189,23 @@ class OllamaVisionProvider(BaseVisionProvider):
             "options": {"temperature": 0.1}
         }
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(f"{self.base_url}/api/generate", json=payload)
+            async with httpx.AsyncClient(timeout=timeout_cfg) as client:
+                resp = await client.post(f"{self.base_url}/api/generate", json=generate_payload)
                 resp.raise_for_status()
                 data = resp.json()
-                raw = clean_json_text(data.get("response", "{}"))
-                res = json.loads(raw)
-                res["is_mock"] = False
-                return res
-        except Exception as e:
-            logger.warning(f"Ollama Vision failed ({e}). Falling back gracefully to MockVisionProvider.")
-            fallback = MockVisionProvider()
-            return await fallback.analyze_image(image_path, context_prompt)
+                resp_text = (data.get("response") or "").strip()
+                thinking = (data.get("thinking") or "").strip()
+                res = extract_json_from_mixed_text(resp_text) or extract_json_from_mixed_text(thinking)
+                if res and isinstance(res, dict):
+                    return _normalize_vision_dict(res)
+        except Exception as e_gen:
+            logger.error(
+                f"[OllamaVisionProvider] Call to Ollama ({self.base_url}, model={self.model}) failed: "
+                f"{type(e_gen).__name__}: {e_gen}. Falling back gracefully to MockVisionProvider."
+            )
+
+        fallback = MockVisionProvider()
+        return await fallback.analyze_image(image_path, context_prompt)
 
 class MockVisionProvider(BaseVisionProvider):
     """Mock vision provider for offline testing."""

@@ -52,6 +52,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onOpenAddCours
     loadData();
   }, []);
 
+  // Real-time listener for active study time updates
+  useEffect(() => {
+    const handleTimeUpdated = (event: any) => {
+      const data = event.detail;
+      if (data && typeof data.total_active_study_minutes === 'number') {
+        setProfile(prev => prev ? {
+          ...prev,
+          total_active_study_minutes: data.total_active_study_minutes,
+          reading_minutes: data.reading_minutes,
+          answering_minutes: data.answering_minutes
+        } : prev);
+      }
+    };
+    window.addEventListener('study-time-updated', handleTimeUpdated);
+    return () => window.removeEventListener('study-time-updated', handleTimeUpdated);
+  }, []);
+
+  const formatMinutes = (val?: number) => {
+    if (!val || val <= 0) return '0';
+    if (val < 1) return '< 1';
+    return Math.round(val).toString();
+  };
+
+  const formatSubMins = (val?: number) => {
+    if (!val || val <= 0) return '0m';
+    if (val < 1) return '< 1m';
+    return `${Math.round(val)}m`;
+  };
+
   const overallPct = profile ? Math.round(profile.overall_mastery * 100) : 0;
   const isColdStart = !profile || profile.status === 'uncalibrated' || masteries.length === 0;
 
@@ -229,13 +258,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onOpenAddCours
           </div>
           <div className="mt-3 flex items-baseline gap-2">
             <span className="text-3xl font-extrabold text-slate-900 dark:text-white">
-              {profile ? Math.round(profile.total_active_study_minutes) : 0}
+              {formatMinutes(profile?.total_active_study_minutes)}
             </span>
             <span className="text-sm font-semibold text-slate-500 dark:text-slate-400">mins</span>
           </div>
           <div className="mt-3 flex justify-between text-xs text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2">
-            <span>Reading: {profile ? Math.round(profile.total_active_study_minutes * 0.6) : 0}m</span>
-            <span>Problems: {profile ? Math.round(profile.total_active_study_minutes * 0.4) : 0}m</span>
+            <span>Reading: {formatSubMins(profile?.reading_minutes ?? (profile ? profile.total_active_study_minutes * 0.6 : 0))}</span>
+            <span>Problems: {formatSubMins(profile?.answering_minutes ?? (profile ? profile.total_active_study_minutes * 0.4 : 0))}</span>
           </div>
         </div>
 
@@ -305,8 +334,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate, onOpenAddCours
               </div>
             ) : (
               <div className="space-y-4">
-                {masteries.map((m) => (
-                  <div key={m.id || m.concept_name} className="space-y-1.5">
+                {masteries.map((m, idx) => (
+                  <div key={`${m.id || m.concept_name}-${idx}`} className="space-y-1.5">
                     <div className="flex justify-between text-sm">
                       <span className="font-semibold text-slate-800 dark:text-slate-200">{m.concept_name}</span>
                       <div className="flex items-center gap-2">

@@ -20,6 +20,42 @@ def clean_json_text(text: str) -> str:
         return match.group(1).strip()
     return text
 
+def extract_json_from_mixed_text(text: str) -> Optional[Dict[str, Any]]:
+    """Robust extractor that parses a JSON dictionary from code fences, thinking traces, or mixed text."""
+    if not text:
+        return None
+    text_stripped = clean_json_text(text.strip())
+    # 1. Direct parse
+    try:
+        data = json.loads(text_stripped)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+
+    # 2. Search for { ... } dictionary candidate blocks
+    candidates = re.findall(r"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})", text)
+    for cand in reversed(candidates):
+        try:
+            cand_dict = json.loads(cand)
+            if isinstance(cand_dict, dict) and any(k in cand_dict for k in ["title", "description", "visual_type", "concept", "status"]):
+                return cand_dict
+        except Exception:
+            continue
+
+    # 3. Outermost braces
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            data = json.loads(text[start:end+1])
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    return None
+
 class GeminiLLMProvider(BaseLLMProvider):
     """Google Gemini LLM provider using the modern google-genai SDK."""
 
@@ -90,11 +126,41 @@ class GeminiLLMProvider(BaseLLMProvider):
             return await fallback.generate_json(prompt, system_prompt, temperature)
 
 class OllamaLLMProvider(BaseLLMProvider):
-    """Local Ollama LLM provider for local offline inference."""
+    """Local Ollama LLM provider for local offline inference using qwen2.5:7b."""
 
     def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
         self.base_url = (base_url or settings.OLLAMA_BASE_URL).rstrip("/")
-        self.model = model or settings.OLLAMA_MODEL or "llama3.2"
+        self.model = model or settings.OLLAMA_MODEL or "qwen2.5:7b"
+
+    async def verify_availability(self) -> Dict[str, Any]:
+        """Verify that Ollama service is reachable and the configured model is installed."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{self.base_url}/api/tags")
+                if resp.status_code == 200:
+                    models = [m.get("name", "") for m in resp.json().get("models", [])]
+                    has_model = any(
+                        self.model == m or self.model == m.split(":")[0] or m.startswith(f"{self.model}:")
+                        for m in models
+                    )
+                    return {
+                        "available": has_model,
+                        "server_online": True,
+                        "model": self.model,
+                        "installed_models": models,
+                        "message": "Model is available in Ollama." if has_model else f"Model '{self.model}' not found in Ollama installed models: {models}"
+                    }
+                return {
+                    "available": False,
+                    "server_online": False,
+                    "error": f"Ollama server returned HTTP {resp.status_code}"
+                }
+        except Exception as e:
+            return {
+                "available": False,
+                "server_online": False,
+                "error": f"Ollama connection error at {self.base_url}: {e}"
+            }
 
     async def generate(
         self,
@@ -122,7 +188,10 @@ class OllamaLLMProvider(BaseLLMProvider):
                 data = resp.json()
                 return data.get("response", "")
         except Exception as e:
-            logger.warning(f"Ollama generation failed ({type(e).__name__}: {e}). Falling back gracefully to MockLLMProvider.")
+            logger.error(
+                f"[OllamaLLMProvider] Call to Ollama ({self.base_url}, model={self.model}) failed: "
+                f"{type(e).__name__}: {e}. Falling back gracefully to MockLLMProvider."
+            )
             fallback = MockLLMProvider()
             return await fallback.generate(prompt, system_prompt, temperature, max_tokens)
 
@@ -152,7 +221,10 @@ class OllamaLLMProvider(BaseLLMProvider):
                 raw = data.get("response", "{}")
                 return json.loads(clean_json_text(raw))
         except Exception as e:
-            logger.warning(f"Ollama JSON generation failed ({type(e).__name__}: {e}). Falling back gracefully to MockLLMProvider.")
+            logger.error(
+                f"[OllamaLLMProvider] JSON call to Ollama ({self.base_url}, model={self.model}) failed: "
+                f"{type(e).__name__}: {e}. Falling back gracefully to MockLLMProvider."
+            )
             fallback = MockLLMProvider()
             return await fallback.generate_json(prompt, system_prompt, temperature)
 

@@ -54,13 +54,91 @@ _PERMISSION_DECLINE_PHRASES = {
 }
 
 
+def is_exhaustive_topic_query(query: str) -> bool:
+    """
+    Identifies requests that demand comprehensive topic enumeration across all uploaded materials,
+    rather than a localized semantic chunk retrieval or single-concept explanation.
+    Matches queries such as:
+    - 'List all topics in the uploaded materials'
+    - 'Give me the complete syllabus from these PDFs'
+    - 'List all modules and subtopics'
+    - 'Identify every topic covered across all documents'
+    - 'Find duplicate topics and topics missing from my notes'
+    """
+    if not query:
+        return False
+    q_norm = query.strip().lower()
+    q_clean = re.sub(r"[^\w\s-]", " ", q_norm)
+    q_clean = re.sub(r"\s+", " ", q_clean).strip()
+
+    # Explicit single-module topic requests (e.g. "topic in module 1", "module 2 topics")
+    if re.search(r"\b(?:topic|topics|top)\s+(?:in|of|from)\s+(?:module|chapter|unit)\s*[-_:#]?\s*(\d+|[ivxlcdm]+)\b", q_clean):
+        return True
+    if re.search(r"\b(?:module|chapter|unit)\s*[-_:#]?\s*(\d+|[ivxlcdm]+)\s+(?:topic|topics|syllabus|subtopics)\b", q_clean):
+        return True
+    if re.search(r"\b(?:tell|give|list|show|what\s+are)\s+(?:the\s+)?(?:all\s+)?(?:topic|topics|top)\s+(?:in|of|for)\s+(?:module|chapter|unit)\b", q_clean):
+        return True
+
+    # All topics queries including variants & common typos like "all the top in the pdf"
+    if re.search(r"\b(?:list|show|give|tell)\s+all\s+(?:the\s+)?(?:top|topic|topics)\b", q_clean):
+        return True
+    if re.search(r"\b(?:all\s+the\s+|all\s+)(?:top|topic|topics)\s+(?:in|of|from)\s+(?:the\s+)?(?:pdf|pdfs|slides|course|materials|uploaded|documents?)\b", q_clean):
+        return True
+
+    triggers = [
+        "list all topics", "list every topic", "list topics", "all topics in",
+        "all topics across", "all topics covered", "every topic covered",
+        "complete topic list", "full topic list", "all the topics",
+        "complete syllabus", "entire syllabus", "whole syllabus", "full syllabus",
+        "syllabus from these", "syllabus from the", "syllabus across", "complete course syllabus",
+        "all modules and subtopics", "list all modules", "modules and topics",
+        "modules and subtopics", "topics and subtopics", "all subtopics", "list all subtopics",
+        "duplicate topics", "overlapping topics", "missing from my notes",
+        "topics missing from", "curriculum gaps", "unique topics across",
+        "index of all topics", "table of contents across", "extract all topics",
+        "what are all the topics", "show all topics", "find all topics",
+        "identify all topics", "identify every topic", "topic index",
+        "consolidated topic", "master topic list", "topics in the uploaded",
+        "topics in uploaded", "topics covered across all", "list modules and subtopics",
+        "list all the top in the pdf", "list all top in the pdf", "all the top in the pdf",
+        "topics in module 1", "topics in module 2", "topic in module 1", "topic in module 2",
+        "tell all the topic", "tell all the topics", "list all the topics in the pdf",
+        "list all topics in the pdf", "topics in the pdf", "topics in pdf"
+    ]
+
+    has_trigger = any(t in q_clean for t in triggers)
+    if not has_trigger:
+        topic_words = ["topic", "topics", "top", "syllabus", "modules", "subtopics", "chapters"]
+        exhaustive_words = ["all", "every", "complete", "entire", "whole", "exhaustive", "full", "duplicate", "missing"]
+        material_words = ["material", "materials", "uploaded", "documents", "pdfs", "pdf", "notes", "course"]
+        has_tw = any(tw in q_clean for tw in topic_words)
+        has_ew = any(ew in q_clean for ew in exhaustive_words)
+        has_mw = any(mw in q_clean for mw in material_words)
+        has_list = any(lw in q_clean for lw in ["list", "give", "show", "tell", "extract", "identify", "find", "what are"])
+        if has_tw and has_ew and (has_mw or has_list):
+            has_trigger = True
+
+    if not has_trigger:
+        return False
+
+    single_concept_starters = [
+        "explain the topic of ", "explain topic ", "what is ", "how does ",
+        "solve the ", "calculate the ", "solve ", "calculate ", "step by step solution"
+    ]
+    if any(q_clean.startswith(sc) for sc in single_concept_starters):
+        if not any(k in q_clean for k in ["list all", "list every", "all topics", "duplicate topics", "complete syllabus"]):
+            return False
+
+    return True
+
+
 def classify_conversational_intent(
     query: str,
     last_assistant_turn: str = ""
 ) -> Optional[Dict[str, Any]]:
     """
     Fast, deterministic intent classifier for conversational turns, permission responses,
-    syllabus overview requests, and explicit off-material queries.
+    exhaustive topic extraction, syllabus overview requests, and explicit off-material queries.
     """
     q_clean = re.sub(r"[^\w\s-]", " ", query.strip().lower())
     q_clean = re.sub(r"\s+", " ", q_clean).strip()
@@ -130,7 +208,16 @@ def classify_conversational_intent(
             "explicit_outside_request": False
         }
 
-    # 5. Syllabus / full material overview
+    # 5. Dedicated Exhaustive Topic Extraction across all materials
+    if is_exhaustive_topic_query(query):
+        return {
+            "intent": "exhaustive_topic_extraction",
+            "relevance": "on_topic",
+            "keywords": ["all_topics"],
+            "explicit_outside_request": False
+        }
+
+    # 6. Syllabus / full material overview
     if any(p in q_clean for p in [
         "entire syllabus", "whole syllabus", "full syllabus", "complete syllabus",
         "all uploaded material", "entire uploaded material", "teach me the syllabus",

@@ -52,6 +52,28 @@ export const LearnerProfile: React.FC = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    const handleTimeUpdated = (event: any) => {
+      const data = event.detail;
+      if (data && typeof data.total_active_study_minutes === 'number') {
+        setProfile(prev => prev ? {
+          ...prev,
+          total_active_study_minutes: data.total_active_study_minutes,
+          reading_minutes: data.reading_minutes,
+          answering_minutes: data.answering_minutes
+        } : prev);
+      }
+    };
+    window.addEventListener('study-time-updated', handleTimeUpdated);
+    return () => window.removeEventListener('study-time-updated', handleTimeUpdated);
+  }, []);
+
+  const formatStudyTime = (mins?: number) => {
+    if (!mins || mins <= 0) return '0 mins';
+    if (mins < 1) return '< 1 min';
+    return `${Math.round(mins)} mins`;
+  };
+
   return (
     <div className="space-y-8 animate-fade-in pb-12">
       <div>
@@ -66,7 +88,7 @@ export const LearnerProfile: React.FC = () => {
         <div className="space-y-6">
           {/* Identity Card */}
           <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs space-y-4">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3.5">
               <div className="w-12 h-12 rounded-2xl bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 text-sky-700 dark:text-sky-300 flex items-center justify-center font-bold text-base shadow-xs">
                 {initials}
               </div>
@@ -87,7 +109,7 @@ export const LearnerProfile: React.FC = () => {
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500 dark:text-slate-400">Total Study Time:</span>
-                <span className="font-bold text-slate-900 dark:text-white">{profile ? Math.round(profile.total_active_study_minutes) : 0} mins</span>
+                <span className="font-bold text-slate-900 dark:text-white">{formatStudyTime(profile?.total_active_study_minutes)}</span>
               </div>
             </div>
           </div>
@@ -171,8 +193,8 @@ export const LearnerProfile: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {masteries.map((m) => (
-                    <tr key={m.id || m.concept_name} className="py-2.5">
+                  {masteries.map((m, idx) => (
+                    <tr key={`${m.id || m.concept_name}-${idx}`} className="py-2.5">
                       <td className="py-3 font-semibold text-slate-900 dark:text-white">{m.concept_name}</td>
                       <td className="py-3">
                         <span className={`px-2 py-0.5 rounded font-bold border ${

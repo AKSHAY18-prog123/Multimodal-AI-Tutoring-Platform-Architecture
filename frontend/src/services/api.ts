@@ -135,6 +135,7 @@ export const api = {
     user_id?: string;
     course_id?: string;
     topic_id?: string;
+    document_id?: string;
     custom_prompt?: string;
     question_type?: string;
     difficulty?: string;
@@ -183,5 +184,9 @@ export const api = {
   submitFeedback: (category: string, rating: number, comment: string, userId?: string) => {
     const payload = { category, rating, comment, user_id: userId || getActiveUserId() };
     return request<any>("/memory/feedback", { method: "POST", body: JSON.stringify(payload) });
+  },
+  syncStudyTime: (data: { seconds_added?: number; minutes_added?: number; activity_type?: string; user_id?: string }) => {
+    const payload = { ...data, user_id: data.user_id || getActiveUserId() };
+    return request<any>("/learner/study-time", { method: "POST", body: JSON.stringify(payload) });
   }
 };

@@ -32,6 +32,51 @@ def find_exact_timestamp_in_chunk(chunk: Dict[str, Any], query: str) -> Dict[str
             "video_url": video_url
         }
 
+    def _to_sec(fmt: str) -> float:
+        parts = [int(p) for p in fmt.split(":")]
+        if len(parts) == 3:
+            return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
+        return float(parts[0] * 60 + parts[1])
+
+    # Direct timestamp target matching in query (e.g. "what happens at 01:20" or "at 15:30")
+    ts_query_match = re.search(r"\b(\d{1,2}:\d{2}(?::\d{2})?)\b", query)
+    if ts_query_match:
+        target_ts_str = ts_query_match.group(1)
+        target_sec = _to_sec(target_ts_str)
+        best_marker_idx = -1
+        best_dist = 999999.0
+        for idx, m in enumerate(matches):
+            m_sec = _to_sec(m.group(1))
+            dist = abs(m_sec - target_sec)
+            if dist < best_dist:
+                best_dist = dist
+                best_marker_idx = idx
+
+        if best_marker_idx != -1 and best_dist <= 180.0:
+            matched_start_fmt = matches[best_marker_idx].group(1)
+            matched_start_sec = _to_sec(matched_start_fmt)
+            next_idx = best_marker_idx + 1
+            if next_idx < len(matches):
+                matched_end_fmt = matches[next_idx].group(1)
+                matched_end_sec = _to_sec(matched_end_fmt)
+            else:
+                matched_end_fmt = default_end
+                matched_end_sec = max(matched_start_sec, default_end_sec)
+
+            updated_url = video_url
+            if video_url and "youtube.com/watch" in video_url:
+                updated_url = re.sub(r"&t=\d+s", f"&t={int(matched_start_sec)}s", video_url)
+                if "&t=" not in updated_url:
+                    updated_url = f"{updated_url}&t={int(matched_start_sec)}s"
+
+            return {
+                "timestamp_start": matched_start_sec,
+                "timestamp_end": matched_end_sec,
+                "timestamp_start_formatted": matched_start_fmt,
+                "timestamp_end_formatted": matched_end_fmt,
+                "video_url": updated_url
+            }
+
     stop_words = {
         "what", "when", "where", "which", "time", "does", "teacher", "instructor",
         "professor", "explain", "explains", "teach", "teaches", "talk", "talks",
@@ -50,15 +95,8 @@ def find_exact_timestamp_in_chunk(chunk: Dict[str, Any], query: str) -> Dict[str
             "timestamp_end_formatted": default_end,
             "video_url": video_url
         }
-
-    def _to_sec(fmt: str) -> float:
-        parts = [int(p) for p in fmt.split(":")]
-        if len(parts) == 3:
-            return float(parts[0] * 3600 + parts[1] * 60 + parts[2])
-        return float(parts[0] * 60 + parts[1])
-
-    best_idx = -1
     best_hits = 0
+    best_idx = -1
     for idx, m in enumerate(matches):
         span_text = m.group(2).lower()
         hits = sum(1 for t in query_terms if t in span_text)
@@ -383,6 +421,9 @@ class ChunkingService:
             video_url = seg.get("video_url")
             is_fallback = bool(seg.get("is_fallback", False))
 
+            assigned_topic = seg.get("topic_name") or (concepts[0] if concepts else "Lecture Video")
+            assigned_concept = concepts[0] if concepts else assigned_topic
+
             chunk_id = str(uuid.uuid4())
             meta: Dict[str, Any] = {
                 "course_id": course_id,
@@ -395,7 +436,10 @@ class ChunkingService:
                 "timestamp_end_formatted": end_fmt,
                 "chunk_type": "video_transcript",
                 "chunk_index": idx,
-                "is_fallback": is_fallback
+                "is_fallback": is_fallback,
+                "topic_name": assigned_topic,
+                "concept_name": assigned_concept,
+                "chapter_title": assigned_topic
             }
             if video_id:
                 meta["video_id"] = video_id
@@ -405,7 +449,7 @@ class ChunkingService:
             chunks.append({
                 "id": chunk_id,
                 "document_id": document_id,
-                "content": f"[Video Segment: {start_fmt} - {end_fmt}]\n{transcript}",
+                "content": f"[Video Segment: {start_fmt} - {end_fmt} | Topic: {assigned_topic}]\n{transcript}",
                 "chunk_type": "video_transcript",
                 "source_type": "video",
                 "source_file": source_file,
@@ -415,8 +459,8 @@ class ChunkingService:
                 "timestamp_end": t_end,
                 "timestamp_start_formatted": start_fmt,
                 "timestamp_end_formatted": end_fmt,
-                "topic_name": concepts[0] if concepts else "Lecture Video",
-                "concept_name": concepts[0] if concepts else "Lecture Segment",
+                "topic_name": assigned_topic,
+                "concept_name": assigned_concept,
                 "metadata": meta
             })
 

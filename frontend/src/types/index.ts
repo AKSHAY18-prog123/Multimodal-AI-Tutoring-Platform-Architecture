@@ -82,6 +82,8 @@ export interface LearnerProfile {
     pacing: string;
   };
   total_active_study_minutes: number;
+  reading_minutes?: number;
+  answering_minutes?: number;
   total_questions_answered: number;
   total_assessments_completed: number;
   is_cold_start: boolean;

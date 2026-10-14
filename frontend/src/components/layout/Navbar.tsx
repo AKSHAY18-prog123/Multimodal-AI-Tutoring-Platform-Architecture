@@ -8,7 +8,8 @@ import {
   Sparkles,
   BookOpen,
   Sun,
-  Moon
+  Moon,
+  BarChart3
 } from 'lucide-react';
 import { useTheme } from '../../context/ThemeContext';
 
@@ -33,6 +34,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     { id: 'assessments', label: 'Adaptive Tests', icon: CheckSquare },
     { id: 'courses', label: 'Course Library', icon: FolderOpen },
     { id: 'profile', label: 'Learner Profile', icon: UserCircle },
+    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
   ];
 
   const initials = studentName

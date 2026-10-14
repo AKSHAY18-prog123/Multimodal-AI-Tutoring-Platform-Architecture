@@ -1,0 +1,11 @@
+Query ID,Category,Query,FlashRank Recall@5,FlashRank MRR@5,FlashRank nDCG@5,FlashRank Latency (ms),GTE-ModernBERT Recall@5,GTE-ModernBERT MRR@5,GTE-ModernBERT nDCG@5,GTE-ModernBERT Latency (ms),Qwen3 Recall@5,Qwen3 MRR@5,Qwen3 nDCG@5,Qwen3 Latency (ms),Winner nDCG@5
+Q01_CONCEPT,concept_specific,What built-in method replaces occurrences of a substring in a Python string?,1.0,0.25,0.4307,17.18,1.0,1.0,1.0,2275.39,1.0,1.0,1.0,49786.35,GTE-ModernBERT
+Q02_CONCEPT,concept_specific,How does backpropagation update weights in a multilayer perceptron?,1.0,1.0,0.7967,6.86,1.0,1.0,0.8262,1663.34,1.0,0.5,0.5213,43154.09,GTE-ModernBERT
+Q08_CONFUSED,easily_confused,What is the difference between single slash division and double slash integer division in Python?,1.0,1.0,1.0,13.39,1.0,1.0,1.0,2471.81,1.0,1.0,1.0,52378.78,Tie
+Q10_CONFUSED,easily_confused,How does bias error compare to variance error in deep learning models?,0.0,0.0,0.0,7.78,1.0,0.5,0.6278,2485.58,1.0,0.5,0.6278,42869.36,GTE-ModernBERT
+Q15_FORMULA,formula_definition,What is the mathematical definition and formula for Cosine Similarity between two vectors?,1.0,1.0,0.9639,6.15,1.0,1.0,0.9639,1616.48,1.0,1.0,0.9639,42991.11,Tie
+Q16_FORMULA,formula_definition,What is the mathematical formulation of Profit and Weight ratio in the Knapsack problem?,1.0,1.0,0.9328,14.01,1.0,1.0,0.8262,2698.36,1.0,1.0,0.9448,52678.04,FlashRank
+Q21_TIMESTAMP,lecture_section_timestamp,What does the teacher discuss at timestamp 00:30 regarding what you can do with Python?,1.0,0.5,0.6309,13.47,1.0,1.0,1.0,2562.54,N/A,N/A,N/A,N/A,GTE-ModernBERT
+Q25_TIMESTAMP,lecture_section_timestamp,"What profit and weight values (25, 24, 15 and 18, 15) are introduced at 00:50 in the Knapsack video?",1.0,1.0,1.0,15.07,1.0,1.0,1.0,2781.05,N/A,N/A,N/A,N/A,Tie
+Q27_ABSENT,absent_out_of_domain,How does Shor's quantum algorithm factor prime numbers in polynomial time using quantum Fourier transform?,1.0,1.0,1.0,10.42,1.0,1.0,1.0,2165.13,N/A,N/A,N/A,N/A,Tie
+Q29_ABSENT,absent_out_of_domain,What are React functional components and how does the useEffect hook handle clean up on unmount?,1.0,1.0,1.0,10.87,1.0,1.0,1.0,2157.86,N/A,N/A,N/A,N/A,Tie
